@@ -1,0 +1,18 @@
+# Secrets — never commit these
+.env
+credentials.json
+token.json
+
+# Temporary / intermediate files (disposable; keep the placeholder)
+.tmp/*
+!.tmp/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/

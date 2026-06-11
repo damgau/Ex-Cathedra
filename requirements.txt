@@ -1,0 +1,4 @@
+# Core dependencies used by most tools.
+# When you add a new tool, append its dependencies here.
+python-dotenv
+requests
