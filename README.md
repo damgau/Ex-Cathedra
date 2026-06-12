@@ -6,7 +6,7 @@ The **WAT framework** (Workflows, Agents, Tools) is a lightweight architecture f
 
 ```bash
 # 1. Copy the template folder
-cp -r "Ex Cathedra03" my-new-project
+cp -r "00_TEMPLATE_FOLDER" my-new-project
 cd my-new-project
 
 # 2. Set up environment variables
