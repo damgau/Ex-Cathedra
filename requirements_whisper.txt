@@ -1,0 +1,2 @@
+# Whisper venv — Python 3.11 only
+faster-whisper

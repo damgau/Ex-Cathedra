@@ -1,4 +1,10 @@
-# Core dependencies used by most tools.
-# When you add a new tool, append its dependencies here.
+# Main venv (Python 3.14) — used by Stages 1, 2, 3, 5
+# Create: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 python-dotenv
 requests
+numpy
+scipy
+
+# Whisper venv (Python 3.11) — used by Stage 4 only
+# faster-whisper requires Python 3.11 (no wheels for 3.14 yet)
+# Create: python3.11 -m venv .venv_whisper && .venv_whisper/bin/pip install -r requirements_whisper.txt
