@@ -14,6 +14,7 @@ import subprocess
 import struct
 from pathlib import Path
 from copy import deepcopy
+from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
@@ -32,11 +33,49 @@ SAMPLE_RATE    = 8000       # Hz — downsample for speed
 SAMPLE_SECS    = 300        # seconds of audio used for correlation
 ANALYSIS_SECS  = 60         # seconds used for channel quality analysis
 TICKS_PER_FRAME = 10_160_640_000
+P2_NS = "urn:schemas-Professional-Plug-in:P2:ClipMetadata:v3.1"
 
 
 # ---------------------------------------------------------------------------
 # Audio extraction via ffmpeg
 # ---------------------------------------------------------------------------
+
+def _walk_p2_audio_chain(video_mxf: Path, channel: int) -> list[Path]:
+    """
+    Walk the P2 clip chain starting from the Top clip and return ordered
+    audio MXF paths for the given channel (1-based).
+    Each audio channel is a separate file: AUDIO/{stem}{channel-1:02d}.MXF
+    """
+    clip_dir  = video_mxf.parent.parent / "CLIP"
+    audio_dir = video_mxf.parent.parent / "AUDIO"
+    ch_suffix = f"{channel - 1:02d}"
+
+    # Resolve the Top-of-chain name from this clip's CLIP metadata
+    clip_xml = clip_dir / f"{video_mxf.stem}.XML"
+    if clip_xml.exists():
+        root    = ET.parse(clip_xml).getroot()
+        top_el  = root.find(f".//{{{P2_NS}}}Top/{{{P2_NS}}}ClipName")
+        start   = top_el.text if top_el is not None else video_mxf.stem
+    else:
+        start = video_mxf.stem
+
+    # Walk forward through the chain collecting audio files
+    audio_files, name = [], start
+    while name:
+        for ext in (".MXF", ".mxf"):
+            candidate = audio_dir / f"{name}{ch_suffix}{ext}"
+            if candidate.exists():
+                audio_files.append(candidate)
+                break
+        cx = clip_dir / f"{name}.XML"
+        if not cx.exists():
+            break
+        cr      = ET.parse(cx).getroot()
+        next_el = cr.find(f".//{{{P2_NS}}}Next/{{{P2_NS}}}ClipName")
+        name    = next_el.text if next_el is not None else None
+
+    return audio_files
+
 
 def _mxf_files_from_xml(xml_path: Path, cam_label: str) -> list[Path]:
     """Return ordered list of MXF paths for the given camera label ('MAIN CAM' or 'DIV CAM')."""
@@ -62,9 +101,7 @@ def _mxf_files_from_xml(xml_path: Path, cam_label: str) -> list[Path]:
             for item in items:
                 f = item.find("file/pathurl")
                 if f is not None and f.text:
-                    p = Path(f.text.replace("file://localhost", "")
-                                   .replace("%20", " ")
-                                   .replace("%28", "(").replace("%29", ")"))
+                    p = Path(unquote(f.text.replace("file://localhost", "")))
                     paths.append(p)
             break
     return paths
@@ -73,34 +110,36 @@ def _mxf_files_from_xml(xml_path: Path, cam_label: str) -> list[Path]:
 def extract_audio_channel(mxf_files: list[Path], channel: int,
                            max_secs: int = SAMPLE_SECS) -> np.ndarray:
     """
-    Extract `max_secs` of mono audio from `channel` (1-based) across
-    the MXF file list, downsampled to SAMPLE_RATE Hz.
-    Streams through ffmpeg — never loads full files into RAM.
+    Extract `max_secs` of mono audio from `channel` (1-based) across the P2
+    clip chain rooted at each video MXF, downsampled to SAMPLE_RATE Hz.
+    Audio lives in AUDIO/{stem}{channel-1:02d}.MXF — never the video MXF.
     """
     target_samples = max_secs * SAMPLE_RATE
     pcm_chunks = []
     collected  = 0
 
-    for mxf in mxf_files:
-        if collected >= target_samples:
-            break
-        remaining_secs = (target_samples - collected) / SAMPLE_RATE
-        cmd = [
-            "ffmpeg", "-loglevel", "error",
-            "-i", str(mxf),
-            "-map", f"0:a:{channel - 1}",
-            "-ar", str(SAMPLE_RATE),
-            "-ac", "1",
-            "-t", str(remaining_secs),
-            "-f", "f32le", "pipe:1",
-        ]
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            print(f"  [WARN] ffmpeg error on {mxf.name}: {result.stderr[:120].decode()}")
-            continue
-        chunk = np.frombuffer(result.stdout, dtype=np.float32)
-        pcm_chunks.append(chunk)
-        collected += len(chunk)
+    for video_mxf in mxf_files:
+        audio_chain = _walk_p2_audio_chain(video_mxf, channel)
+        for audio_mxf in audio_chain:
+            if collected >= target_samples:
+                break
+            remaining_secs = (target_samples - collected) / SAMPLE_RATE
+            cmd = [
+                "ffmpeg", "-loglevel", "error",
+                "-i", str(audio_mxf),
+                "-map", "0:a:0",
+                "-ar", str(SAMPLE_RATE),
+                "-ac", "1",
+                "-t", str(remaining_secs),
+                "-f", "f32le", "pipe:1",
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0:
+                print(f"  [WARN] ffmpeg error on {audio_mxf.name}: {result.stderr[:120].decode()}")
+                continue
+            chunk = np.frombuffer(result.stdout, dtype=np.float32)
+            pcm_chunks.append(chunk)
+            collected += len(chunk)
 
     return np.concatenate(pcm_chunks) if pcm_chunks else np.array([], dtype=np.float32)
 
@@ -160,11 +199,22 @@ def detect_best_channel(mxf_files: list[Path], cam_name: str) -> tuple[int, list
 
 def find_sync_offset_frames(audio_a: np.ndarray, audio_b: np.ndarray) -> int:
     """
-    Return how many frames b started BEFORE a, using:
-      z[k] = sum_n a[n+k] * b[n]  (scipy correlate convention)
-    Positive result → b started first; shift a forward by that many frames.
-    Negative result → a started first; shift b forward by abs(result) frames.
+    Return how many frames `a` started BEFORE `b` (i.e. a's lead over b).
+
+    scipy.correlate(a, b) peaks at the lag where a's content best lines up
+    with b's. When `a` started recording earlier, the shared event sits at a
+    LARGER offset inside a, so a's content is delayed relative to b and the
+    peak lands at a positive lag.
+
+      Positive result → a started first  → a leads b by that many frames.
+      Negative result → b started first  → b leads a by abs(result) frames.
+
+    Caller convention (see main): pass (main_audio, div_audio) so a positive
+    return means MAIN started before DIV.
     """
+    if audio_a.size == 0 or audio_b.size == 0:
+        sys.exit("[ERROR] Audio extraction returned no data — check MXF paths and ffmpeg output above.")
+
     def norm(x):
         x = x - np.mean(x)
         std = np.std(x)
@@ -186,18 +236,6 @@ def find_sync_offset_frames(audio_a: np.ndarray, audio_b: np.ndarray) -> int:
 def _clipitem_start_end(item: ET.Element):
     return int(item.find("start").text), int(item.find("end").text)
 
-
-def _get_cam_track(seq: ET.Element, cam_label: str):
-    """Return the video track element for the given camera."""
-    vid = seq.find("media/video")
-    for track in vid.findall("track"):
-        items = track.findall("clipitem")
-        if not items:
-            continue
-        f = items[0].find("file/pathurl")
-        if f is not None and cam_label.replace(" ", "%20") in (f.text or ""):
-            return track
-    return None
 
 
 
@@ -283,6 +321,9 @@ def main():
 
     main_ch, div_ch = 1, 1   # defaults used for sync if detection is skipped
 
+    if bool(args.force_camera) != bool(args.force_channel):
+        sys.exit("[ERROR] --force-camera and --force-channel must be used together.")
+
     if args.force_camera and args.force_channel:
         clean_cam = "MAIN CAM" if args.force_camera == "main" else "DIV CAM"
         clean_ch  = args.force_channel
@@ -340,18 +381,20 @@ def main():
     print(f"      DIV  CAM: {len(div_audio)/SAMPLE_RATE:.1f}s extracted")
 
     print("\n[4/5] Computing cross-correlation...")
-    # lag > 0: DIV started lag frames before MAIN → shift MAIN by +lag
-    # lag < 0: MAIN started |lag| frames before DIV → shift DIV by +|lag|
-    lag_frames = find_sync_offset_frames(main_audio, div_audio)
-    lag_secs   = lag_frames / 25
-    print(f"      Lag: {lag_frames} frames ({lag_secs:+.2f}s)")
+    # main_lead_frames = how many frames MAIN started BEFORE DIV.
+    #   > 0: MAIN started first → DIV is the later camera → shift DIV forward
+    #   < 0: DIV started first  → MAIN is the later camera → shift MAIN forward
+    # We always shift the later-starting camera forward to align the two.
+    main_lead_frames = find_sync_offset_frames(main_audio, div_audio)
+    lead_secs        = main_lead_frames / 25
+    print(f"      MAIN leads DIV by {main_lead_frames} frames ({lead_secs:+.2f}s)")
 
-    if lag_frames >= 0:
-        cam_to_shift = "MAIN CAM"
-        offset       = lag_frames
-    else:
+    if main_lead_frames >= 0:
         cam_to_shift = "DIV CAM"
-        offset       = -lag_frames
+        offset       = main_lead_frames
+    else:
+        cam_to_shift = "MAIN CAM"
+        offset       = -main_lead_frames
 
     print(f"      {cam_to_shift} will be shifted by +{offset} frames")
 
