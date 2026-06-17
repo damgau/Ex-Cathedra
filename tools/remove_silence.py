@@ -11,6 +11,7 @@ import copy
 import argparse
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
@@ -25,6 +26,75 @@ OUTPUT_DIR   = BASE_DIR / "OUTPUT"
 SAMPLE_RATE      = 8000      # Hz
 TICKS_PER_FRAME  = 10_160_640_000
 FPS              = 25
+P2_NS            = 'urn:schemas-Professional-Plug-in:P2:ClipMetadata:v3.1'
+
+
+# ---------------------------------------------------------------------------
+# P2 chain resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_p2_chain(mxf: Path, source_in: int, duration: int) -> list:
+    """
+    Panasonic P2 spanned clips: a long recording is split across multiple MXF
+    files linked via CLIP/*.XML Next/Top elements.  When an FCP XML references
+    the last clip in the chain but with in/out spanning the whole recording,
+    we walk the chain from Top and return per-physical-file slices:
+      [(video_mxf, local_src_in, local_dur), ...]
+    Falls back to [(mxf, source_in, duration)] when no chain is found.
+    """
+    clip_dir = mxf.parent.parent / "CLIP"
+    candidates = list(clip_dir.glob(f"{mxf.stem}.XML")) + list(clip_dir.glob(f"{mxf.stem}.xml"))
+    if not candidates:
+        return [(mxf, source_in, duration)]
+
+    try:
+        root = ET.parse(candidates[0]).getroot()
+    except Exception:
+        return [(mxf, source_in, duration)]
+
+    top_el = root.find(f'.//{{{P2_NS}}}Top/{{{P2_NS}}}ClipName')
+    if top_el is None:
+        return [(mxf, source_in, duration)]  # single clip, no chain
+
+    # Walk chain from Top, collecting {name, offset, duration}
+    chain = []
+    name = top_el.text
+    cumulative = 0
+    while name:
+        cxml_candidates = list(clip_dir.glob(f"{name}.XML")) + list(clip_dir.glob(f"{name}.xml"))
+        if not cxml_candidates:
+            break
+        try:
+            croot = ET.parse(cxml_candidates[0]).getroot()
+        except Exception:
+            break
+        dur_el    = croot.find(f'.//{{{P2_NS}}}Duration')
+        next_el   = croot.find(f'.//{{{P2_NS}}}Next/{{{P2_NS}}}ClipName')
+        offset_el = croot.find(f'.//{{{P2_NS}}}OffsetInShot')
+        clip_dur  = int(dur_el.text) if dur_el is not None else 0
+        offset    = int(offset_el.text) if offset_el is not None else cumulative
+        chain.append({'name': name, 'duration': clip_dur, 'offset': offset})
+        cumulative = offset + clip_dur
+        name = next_el.text if next_el is not None else None
+
+    if not chain:
+        return [(mxf, source_in, duration)]
+
+    # Map global range [source_in, source_in+duration] onto physical clip files
+    g_start = source_in
+    g_end   = source_in + duration
+    result  = []
+    for clip in chain:
+        O       = clip['offset']
+        D       = clip['duration']
+        c_start = max(g_start, O)
+        c_end   = min(g_end, O + D)
+        if c_end <= c_start:
+            continue
+        clip_mxf = mxf.parent / f"{clip['name']}{mxf.suffix}"
+        result.append((clip_mxf, c_start - O, c_end - c_start))
+
+    return result if result else [(mxf, source_in, duration)]
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +120,11 @@ def _get_cam_clips(seq: ET.Element, cam_label: str) -> list:
         for item in items:
             furl = item.find("file/pathurl")
             if furl is not None and furl.text:
-                p   = Path(furl.text.replace("file://localhost", "")
-                                    .replace("%20", " ").replace("%28", "(")
-                                    .replace("%29", ")"))
+                raw = unquote(furl.text.replace("file://localhost", ""))
+                # Strip leading "/" before Windows drive letter (e.g. /G:/... → G:/...)
+                if len(raw) > 2 and raw[0] == "/" and raw[2] == ":":
+                    raw = raw[1:]
+                p   = Path(raw)
                 t_s = int(item.find("start").text)
                 s_in = int(item.find("in").text)
                 dur  = int(item.find("end").text) - t_s
@@ -65,24 +137,37 @@ def extract_timeline_audio(cam_clips: list, channel: int) -> tuple:
     """
     Extract and concatenate audio for the clean camera's clips.
     Returns (audio_array, timeline_start_frame).
+
+    P2 cameras store each channel in a separate MXF under AUDIO/:
+      VIDEO/0158Q5.MXF  →  AUDIO/0158Q500.MXF (CH1), 0158Q501.MXF (CH2), …
+    When a single clipitem spans a P2 chain, _resolve_p2_chain expands it
+    into per-physical-file slices before extraction.
     """
     chunks = []
+    channel_idx = channel - 1
+
     for (t_start, mxf, src_in, dur) in cam_clips:
-        start_secs = src_in / FPS
-        dur_secs   = dur   / FPS
-        cmd = [
-            "ffmpeg", "-loglevel", "error",
-            "-ss", str(start_secs), "-i", str(mxf),
-            "-t", str(dur_secs),
-            "-map", f"0:a:{channel - 1}",
-            "-ar", str(SAMPLE_RATE), "-ac", "1",
-            "-f", "f32le", "pipe:1",
-        ]
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0:
-            print(f"  [WARN] ffmpeg error on {mxf.name}: {result.stderr[:100].decode()}")
-            continue
-        chunks.append(np.frombuffer(result.stdout, dtype=np.float32))
+        sub_clips = _resolve_p2_chain(mxf, src_in, dur)
+        for (sub_mxf, sub_in, sub_dur) in sub_clips:
+            audio_mxf = sub_mxf.parent.parent / "AUDIO" / f"{sub_mxf.stem}{channel_idx:02d}.MXF"
+            if not audio_mxf.exists():
+                audio_mxf = sub_mxf.parent.parent / "AUDIO" / f"{sub_mxf.stem}{channel_idx:02d}.mxf"
+            start_secs = sub_in  / FPS
+            dur_secs   = sub_dur / FPS
+            cmd = [
+                "ffmpeg", "-loglevel", "error",
+                "-ss", str(start_secs), "-i", str(audio_mxf),
+                "-t", str(dur_secs),
+                "-map", "0:a:0",
+                "-ar", str(SAMPLE_RATE), "-ac", "1",
+                "-f", "f32le", "pipe:1",
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0:
+                print(f"  [WARN] ffmpeg error on {audio_mxf.name}: {result.stderr[:100].decode()}")
+                continue
+            chunks.append(np.frombuffer(result.stdout, dtype=np.float32))
+
     audio = np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
     return audio, cam_clips[0][0] if cam_clips else 0
 

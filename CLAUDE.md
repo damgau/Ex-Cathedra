@@ -38,6 +38,10 @@ When you hit an error:
 **3. Keep workflows current**
 Workflows should evolve as you learn. When you find better methods, discover constraints, or encounter recurring issues, update the workflow. That said, don't create or overwrite workflows without asking unless I explicitly tell you to. These are your instructions and need to be preserved and refined, not tossed after one use.
 
+**4. Read domain references before writing tools**
+Before writing or editing any script that touches project-specific data formats, read the relevant reference doc:
+- **P2 MXF content** (audio extraction, chained clips, FCP XML pathuris) → `panasonic_p2_reference.md`
+
 ## The Self-Improvement Loop
 
 Every failure is a chance to make the system stronger:
@@ -62,6 +66,7 @@ tools/          # Python scripts for deterministic execution
 workflows/      # Markdown SOPs defining what to do and how
 .env            # API keys and environment variables (NEVER store secrets anywhere else)
 credentials.json, token.json  # Google OAuth (gitignored)
+panasonic_p2_reference.md     # P2 MXF format conventions (audio extraction, chained clips, FCP XML)
 ```
 
 **Core principle:** Local files are just for processing. Anything I need to see or use lives in cloud services. Everything in `.tmp/` is disposable.

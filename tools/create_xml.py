@@ -104,9 +104,9 @@ def _colorinfo() -> str:
     )
 
 
-def _file_element(file_id: int, clip: dict, video_path: Path) -> str:
+def _file_element(file_id: int, clip: dict, video_path: Path, file_duration: int = None) -> str:
     url = pathurl(video_path)
-    d   = clip["duration"]
+    d   = file_duration if file_duration is not None else clip["duration"]
     return (
         f'<file id="file-{file_id}">'
         f"<name>{clip['name']}</name>"
@@ -160,11 +160,12 @@ def _links_for_audio(vid_id, vid_track, clip_idx, sib_ids, sib_tracks) -> str:
 
 
 def _video_clipitem(clip_id, mc_id, file_id, clip, t_start,
-                    track_idx, clip_idx, aud_ids, aud_tracks, video_path) -> str:
+                    track_idx, clip_idx, aud_ids, aud_tracks, video_path,
+                    file_duration=None) -> str:
     d    = clip["duration"]
     t_end = t_start + d
     ticks = d * TICKS_PER_FRAME
-    file_el = _file_element(file_id, clip, video_path)
+    file_el = _file_element(file_id, clip, video_path, file_duration)
     links   = _links_for_video(clip_id, track_idx, clip_idx, aud_ids, aud_tracks)
     return (
         f'<clipitem id="clipitem-{clip_id}">'
@@ -240,100 +241,73 @@ def _audio_track_xml(clipitems: list, out_chan: int) -> str:
 def generate_xml(main_chain: list, div_chain: list, output_path: Path):
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    n_main = len(main_chain)
-    n_div  = len(div_chain)
+    main_total = sum(c["duration"] for c in main_chain)
+    div_total  = sum(c["duration"] for c in div_chain)
+    seq_duration   = max(main_total, div_total)
+    work_out_ticks = seq_duration * TICKS_PER_FRAME
 
-    # Clipitem ID layout (1-based, contiguous blocks):
-    #   MAIN video   :   1 ..   n_main
-    #   MAIN aud ch1 :   n_main+1 .. 2*n_main
-    #   MAIN aud ch2 : 2*n_main+1 .. 3*n_main
-    #   MAIN aud ch3 : 3*n_main+1 .. 4*n_main
-    #   MAIN aud ch4 : 4*n_main+1 .. 5*n_main
-    #   DIV  video   : 5*n_main+1 .. 5*n_main+n_div
-    #   DIV  aud ch1 : 5*n_main+  n_div+1 .. 5*n_main+2*n_div
-    #   ... (same pattern)
-    def main_vid_id(i):     return 1 + i
-    def main_aud_id(ch, i): return n_main * (1 + ch) + 1 + i  # ch 0-3
-    def div_vid_id(i):      return 5 * n_main + 1 + i
-    def div_aud_id(ch, i):  return 5 * n_main + n_div * (1 + ch) + 1 + i
+    # One clipitem per camera: reference the Top (first) physical MXF with
+    # out = full chain duration. Premiere reads the P2 CLIP XML to span
+    # across all physical files automatically (see panasonic_p2_reference.md §6).
+    # <file>/<duration> stays at the physical file's actual frame count.
+    main_top  = main_chain[0]
+    div_top   = div_chain[0]
+    main_clip = {"name": main_top["name"], "duration": main_total}
+    div_clip  = {"name": div_top["name"],  "duration": div_total}
 
-    # File IDs: one per MXF file
-    def main_fid(i): return 1 + i
-    def div_fid(i):  return n_main + 1 + i
+    # Fixed clipitem IDs — 10 total (1 vid + 4 aud) × 2 cameras
+    MAIN_VID_ID  = 1
+    MAIN_AUD_IDS = [2, 3, 4, 5]
+    DIV_VID_ID   = 6
+    DIV_AUD_IDS  = [7, 8, 9, 10]
+    MAIN_FILE_ID = 1
+    DIV_FILE_ID  = 2
 
     MAIN_VID_TRACK  = 2
     DIV_VID_TRACK   = 1
     MAIN_AUD_TRACKS = [1, 2, 3, 4]
     DIV_AUD_TRACKS  = [5, 6, 7, 8]
-    OUT_CHANS       = [1, 2, 1, 2]   # alternating L/R for tracks 1-4
+    OUT_CHANS       = [1, 2, 1, 2]
 
-    # Timeline offsets per camera
-    main_starts, pos = [], 0
-    for c in main_chain:
-        main_starts.append(pos); pos += c["duration"]
-    main_total = pos
+    main_vid_item = _video_clipitem(
+        clip_id=MAIN_VID_ID, mc_id=MAIN_FILE_ID, file_id=MAIN_FILE_ID,
+        clip=main_clip, t_start=0,
+        track_idx=MAIN_VID_TRACK, clip_idx=1,
+        aud_ids=MAIN_AUD_IDS, aud_tracks=MAIN_AUD_TRACKS,
+        video_path=mxf_path(MAIN_VIDEO_DIR, main_top["name"]),
+        file_duration=main_top["duration"],
+    )
 
-    div_starts, pos = [], 0
-    for c in div_chain:
-        div_starts.append(pos); pos += c["duration"]
-    div_total = pos
+    div_vid_item = _video_clipitem(
+        clip_id=DIV_VID_ID, mc_id=DIV_FILE_ID, file_id=DIV_FILE_ID,
+        clip=div_clip, t_start=0,
+        track_idx=DIV_VID_TRACK, clip_idx=1,
+        aud_ids=DIV_AUD_IDS, aud_tracks=DIV_AUD_TRACKS,
+        video_path=mxf_path(DIV_VIDEO_DIR, div_top["name"]),
+        file_duration=div_top["duration"],
+    )
 
-    seq_duration   = max(main_total, div_total)
-    work_out_ticks = seq_duration * TICKS_PER_FRAME
-
-    # ---- MAIN CAM video clipitems ----
-    main_vid_items = []
-    for i, (clip, start) in enumerate(zip(main_chain, main_starts)):
-        aud_ids = [main_aud_id(ch, i) for ch in range(4)]
-        main_vid_items.append(_video_clipitem(
-            clip_id=main_vid_id(i), mc_id=main_fid(i), file_id=main_fid(i),
-            clip=clip, t_start=start,
-            track_idx=MAIN_VID_TRACK, clip_idx=i + 1,
-            aud_ids=aud_ids, aud_tracks=MAIN_AUD_TRACKS,
-            video_path=mxf_path(MAIN_VIDEO_DIR, clip["name"]),
-        ))
-
-    # ---- DIV CAM video clipitems ----
-    div_vid_items = []
-    for i, (clip, start) in enumerate(zip(div_chain, div_starts)):
-        aud_ids = [div_aud_id(ch, i) for ch in range(4)]
-        div_vid_items.append(_video_clipitem(
-            clip_id=div_vid_id(i), mc_id=div_fid(i), file_id=div_fid(i),
-            clip=clip, t_start=start,
-            track_idx=DIV_VID_TRACK, clip_idx=i + 1,
-            aud_ids=aud_ids, aud_tracks=DIV_AUD_TRACKS,
-            video_path=mxf_path(DIV_VIDEO_DIR, clip["name"]),
-        ))
-
-    # ---- MAIN CAM audio clipitems (4 channels × n_main clips) ----
     main_aud_tracks_xml = []
     for ch in range(4):
-        items = []
-        for i, (clip, start) in enumerate(zip(main_chain, main_starts)):
-            sib_ids = [main_aud_id(c, i) for c in range(4)]
-            items.append(_audio_clipitem(
-                clip_id=main_aud_id(ch, i), mc_id=main_fid(i), file_id=main_fid(i),
-                clip=clip, t_start=start,
-                src_ch=ch + 1, track_idx=MAIN_AUD_TRACKS[ch], clip_idx=i + 1,
-                vid_id=main_vid_id(i), vid_track=MAIN_VID_TRACK,
-                sib_ids=sib_ids, sib_tracks=MAIN_AUD_TRACKS,
-            ))
-        main_aud_tracks_xml.append(_audio_track_xml(items, OUT_CHANS[ch]))
+        item = _audio_clipitem(
+            clip_id=MAIN_AUD_IDS[ch], mc_id=MAIN_FILE_ID, file_id=MAIN_FILE_ID,
+            clip=main_clip, t_start=0,
+            src_ch=ch + 1, track_idx=MAIN_AUD_TRACKS[ch], clip_idx=1,
+            vid_id=MAIN_VID_ID, vid_track=MAIN_VID_TRACK,
+            sib_ids=MAIN_AUD_IDS, sib_tracks=MAIN_AUD_TRACKS,
+        )
+        main_aud_tracks_xml.append(_audio_track_xml([item], OUT_CHANS[ch]))
 
-    # ---- DIV CAM audio clipitems (4 channels × n_div clips) ----
     div_aud_tracks_xml = []
     for ch in range(4):
-        items = []
-        for i, (clip, start) in enumerate(zip(div_chain, div_starts)):
-            sib_ids = [div_aud_id(c, i) for c in range(4)]
-            items.append(_audio_clipitem(
-                clip_id=div_aud_id(ch, i), mc_id=div_fid(i), file_id=div_fid(i),
-                clip=clip, t_start=start,
-                src_ch=ch + 1, track_idx=DIV_AUD_TRACKS[ch], clip_idx=i + 1,
-                vid_id=div_vid_id(i), vid_track=DIV_VID_TRACK,
-                sib_ids=sib_ids, sib_tracks=DIV_AUD_TRACKS,
-            ))
-        div_aud_tracks_xml.append(_audio_track_xml(items, OUT_CHANS[ch]))
+        item = _audio_clipitem(
+            clip_id=DIV_AUD_IDS[ch], mc_id=DIV_FILE_ID, file_id=DIV_FILE_ID,
+            clip=div_clip, t_start=0,
+            src_ch=ch + 1, track_idx=DIV_AUD_TRACKS[ch], clip_idx=1,
+            vid_id=DIV_VID_ID, vid_track=DIV_VID_TRACK,
+            sib_ids=DIV_AUD_IDS, sib_tracks=DIV_AUD_TRACKS,
+        )
+        div_aud_tracks_xml.append(_audio_track_xml([item], OUT_CHANS[ch]))
 
     all_audio_tracks = "".join(main_aud_tracks_xml + div_aud_tracks_xml)
     seq_uuid = str(uuid.uuid4())
@@ -359,18 +333,18 @@ def generate_xml(main_chain: list, div_chain: list, output_path: Path):
         f"    <media>\n"
         f"      <video>\n"
         f"        <format><samplecharacteristics>"
-        f"{_rate()}<width>1920</width><height>1080</height>"
-        f"<anamorphic>FALSE</anamorphic><pixelaspectratio>square</pixelaspectratio>"
+        f"{_rate()}<width>1440</width><height>1080</height>"
+        f"<anamorphic>FALSE</anamorphic><pixelaspectratio>HD-(1440x1080)</pixelaspectratio>"
         f"<fielddominance>none</fielddominance><colordepth>24</colordepth>"
         f"</samplecharacteristics></format>\n"
         f'        <track TL.SQTrackShy="0" TL.SQTrackExpandedHeight="15"'
         f' TL.SQTrackExpanded="0" MZ.TrackTargeted="1">\n'
-        f"          {''.join(div_vid_items)}\n"
+        f"          {div_vid_item}\n"
         f"          <enabled>TRUE</enabled><locked>FALSE</locked>\n"
         f"        </track>\n"
         f'        <track TL.SQTrackShy="0" TL.SQTrackExpandedHeight="15"'
         f' TL.SQTrackExpanded="0" MZ.TrackTargeted="0">\n'
-        f"          {''.join(main_vid_items)}\n"
+        f"          {main_vid_item}\n"
         f"          <enabled>TRUE</enabled><locked>FALSE</locked>\n"
         f"        </track>\n"
         f"      </video>\n"

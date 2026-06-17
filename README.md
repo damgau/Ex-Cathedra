@@ -1,36 +1,62 @@
-# WAT Framework Template
+# EX Cathedra — Video Editing Automation Pipeline
 
-The **WAT framework** (Workflows, Agents, Tools) is a lightweight architecture for reliable AI-assisted automation. It keeps probabilistic AI (reasoning, orchestration) separate from deterministic code (execution), so accuracy compounds instead of decaying. Workflows define *what* to do in plain Markdown SOPs; Tools are Python scripts that *do* the work; the Agent (Claude) reads the workflow, sequences the tools, and improves the system when things go wrong.
+Automates the repetitive editing work for solo conference recordings shot with 2 cameras. Starting from raw MXF files, the pipeline syncs cameras, cuts silence, transcribes speech, and removes fillers — producing a Premiere Pro-ready FCP XML at each stage so you can validate before moving forward.
 
-## Starting a new project from this template
+## Pipeline overview
 
-```bash
-# 1. Copy the template folder
-cp -r "Ex Cathedra03" my-new-project
-cd my-new-project
-
-# 2. Set up environment variables
-cp .env.example .env
-# Edit .env and fill in real API keys
-
-# 3. Create and activate a virtual environment
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
-# 4. Install dependencies
-pip install -r requirements.txt
+```
+INPUT/MAIN CAM/ + INPUT/DIV CAM/
+        ↓ tools/create_xml.py       →  OUTPUT/01_create.xml
+        ↓ tools/sync_audios.py      →  OUTPUT/02_sync.xml
+        ↓ tools/remove_silence.py   →  OUTPUT/03_silence.xml
+        ↓ tools/create_transcript.py→  OUTPUT/04_transcript.json
+        ↓ tools/remove_fillers.py   →  OUTPUT/05_fillers.xml  ← import into Premiere
 ```
 
-## Where things live
+Each stage reads the previous stage's output. Run them in order, validate in Premiere, then proceed.
 
-| Path | Purpose |
-|------|---------|
-| `workflows/` | Markdown SOPs — read these to understand how a task works |
-| `tools/` | Python scripts — the deterministic execution layer |
-| `.env` | API keys and secrets (never committed) |
-| `.tmp/` | Intermediate/temporary files (disposable, auto-generated) |
+## Stages
 
-Start by copying `workflows/_TEMPLATE.md` for each new task and `tools/_template.py` for each new script.
+| Stage | Script | What it does |
+|-------|--------|-------------|
+| 1 | `create_xml.py` | Scans P2 metadata, chains MXF clips in order, outputs base FCP XML with both cameras on V1/V2 |
+| 2 | `sync_audios.py` | Detects the cleanest audio channel, cross-correlates cameras, shifts one track to align |
+| 3 | `remove_silence.py` | Detects pauses ≥ 1.5s on the clean channel, cuts or mutes them across all tracks |
+| 4 | `create_transcript.py` | Runs `faster-whisper` (large-v3, French) on post-cut audio, outputs word-level timestamps |
+| 5 | `remove_fillers.py` | Removes fixed fillers (`euh`, `ah`, `bah` …) and detected verbal tics from the timeline |
+
+## Setup
+
+```bash
+# Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS/Linux
+
+# Install dependencies
+pip install -r requirements.txt
+
+# ffmpeg must be installed on the system
+# Windows: winget install ffmpeg   |   macOS: brew install ffmpeg
+```
+
+No `.env` is required for the current stages — all processing is local.
+
+## Project layout
+
+```
+INPUT/
+  MAIN CAM/   # Raw MXF files — primary/active camera
+  DIV CAM/    # Raw MXF files — wide-angle safety camera
+OUTPUT/        # FCP XMLs and transcript produced by each stage
+tools/         # One Python script per pipeline stage
+workflows/     # Markdown SOPs describing each stage in detail
+tmp/           # Temporary files (disposable, auto-generated)
+PLAN.md        # Full architecture and algorithm spec
+```
+
+## Per-project usage
+
+Each conference gets its own clone of this folder. Drop the MXF files into `INPUT/MAIN CAM/` and `INPUT/DIV CAM/`, then run the stages in sequence.
+
+Stages 2 and 5 are interactive — they ask for confirmation before applying detected sync offsets or verbal tic removals.
