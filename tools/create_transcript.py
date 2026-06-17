@@ -18,6 +18,7 @@ import argparse
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
@@ -28,6 +29,65 @@ import xml.etree.ElementTree as ET
 BASE_DIR    = Path(__file__).parent.parent
 OUTPUT_DIR  = BASE_DIR / "OUTPUT"
 FPS         = 25
+P2_NS       = 'urn:schemas-Professional-Plug-in:P2:ClipMetadata:v3.1'
+
+# ---------------------------------------------------------------------------
+# P2 chain resolution (mirrors remove_silence.py)
+# ---------------------------------------------------------------------------
+
+def _resolve_p2_chain(mxf: Path, source_in: int, duration: int) -> list:
+    """
+    Returns per-physical-file slices: [(video_mxf, local_src_in, local_dur), ...]
+    Falls back to [(mxf, source_in, duration)] when no chain XML is found.
+    """
+    clip_dir = mxf.parent.parent / "CLIP"
+    candidates = list(clip_dir.glob(f"{mxf.stem}.XML")) + list(clip_dir.glob(f"{mxf.stem}.xml"))
+    if not candidates:
+        return [(mxf, source_in, duration)]
+    try:
+        root = ET.parse(candidates[0]).getroot()
+    except Exception:
+        return [(mxf, source_in, duration)]
+
+    top_el = root.find(f'.//{{{P2_NS}}}Top/{{{P2_NS}}}ClipName')
+    if top_el is None:
+        return [(mxf, source_in, duration)]
+
+    chain = []
+    name = top_el.text
+    cumulative = 0
+    while name:
+        cxml = (list(clip_dir.glob(f"{name}.XML")) + list(clip_dir.glob(f"{name}.xml")))
+        if not cxml:
+            break
+        try:
+            croot = ET.parse(cxml[0]).getroot()
+        except Exception:
+            break
+        dur_el    = croot.find(f'.//{{{P2_NS}}}Duration')
+        next_el   = croot.find(f'.//{{{P2_NS}}}Next/{{{P2_NS}}}ClipName')
+        offset_el = croot.find(f'.//{{{P2_NS}}}OffsetInShot')
+        clip_dur  = int(dur_el.text) if dur_el is not None else 0
+        offset    = int(offset_el.text) if offset_el is not None else cumulative
+        chain.append({'name': name, 'duration': clip_dur, 'offset': offset})
+        cumulative = offset + clip_dur
+        name = next_el.text if next_el is not None else None
+
+    if not chain:
+        return [(mxf, source_in, duration)]
+
+    g_start, g_end = source_in, source_in + duration
+    result = []
+    for clip in chain:
+        O, D = clip['offset'], clip['duration']
+        c_start, c_end = max(g_start, O), min(g_end, O + D)
+        if c_end <= c_start:
+            continue
+        clip_mxf = mxf.parent / f"{clip['name']}{mxf.suffix}"
+        result.append((clip_mxf, c_start - O, c_end - c_start))
+
+    return result if result else [(mxf, source_in, duration)]
+
 
 # ---------------------------------------------------------------------------
 # Audio reconstruction from post-silence XML
@@ -55,13 +115,22 @@ def _get_cam_clips_for_audio(seq: ET.Element, cam_label: str) -> list:
             if item.find("enabled") is not None and item.find("enabled").text == "FALSE":
                 continue
             furl = item.find("file/pathurl")
-            if furl is not None and furl.text:
-                p    = Path(furl.text.replace("file://localhost", "")
-                                     .replace("%20", " "))
-                t_s  = int(item.find("start").text)
-                s_in = int(item.find("in").text)
-                dur  = int(item.find("end").text) - t_s
-                result.append((t_s, p, s_in, dur))
+            if furl is None or not furl.text:
+                continue
+            raw = unquote(furl.text.replace("file://localhost", ""))
+            if len(raw) > 2 and raw[0] == "/" and raw[2] == ":":
+                raw = raw[1:]
+            p = Path(raw)
+            start_el = item.find("start")
+            in_el    = item.find("in")
+            end_el   = item.find("end")
+            if (start_el is None or in_el is None or end_el is None
+                    or start_el.text is None or in_el.text is None or end_el.text is None):
+                continue
+            t_s  = int(start_el.text)
+            s_in = int(in_el.text)
+            dur  = int(end_el.text) - t_s
+            result.append((t_s, p, s_in, dur))
         return result
     return []
 
@@ -72,40 +141,53 @@ def build_audio_for_whisper(clips: list, channel: int,
     Extract each clip's audio and concat into one WAV file for Whisper.
     Returns (wav_path, segment_map) where segment_map is:
       [(audio_start_s, audio_end_s, timeline_start_frame, timeline_end_frame), ...]
+
+    P2 audio is in AUDIO/{stem}{channel_idx:02d}.MXF — never the video MXF.
+    Chained clips are resolved via _resolve_p2_chain before extraction.
     """
     segment_files = []
     segment_map   = []
     audio_cursor  = 0.0
+    channel_idx   = channel - 1
 
     for i, (t_start, mxf, src_in, dur) in enumerate(clips):
-        start_secs = src_in / FPS
-        dur_secs   = dur    / FPS
-        out_f      = tmp_dir / f"seg_{i:04d}.wav"
+        sub_clips = _resolve_p2_chain(mxf, src_in, dur)
+        t_cursor  = t_start
 
-        cmd = [
-            "ffmpeg", "-loglevel", "error",
-            "-ss", str(start_secs), "-i", str(mxf),
-            "-t", str(dur_secs),
-            "-map", f"0:a:{channel - 1}",
-            "-ar", "16000",          # Whisper expects 16 kHz
-            "-ac", "1",
-            str(out_f),
-        ]
-        result = subprocess.run(cmd, capture_output=True)
-        if result.returncode != 0 or not out_f.exists():
-            print(f"  [WARN] ffmpeg failed for clip {i}: "
-                  f"{result.stderr[:80].decode()}")
-            continue
+        for j, (sub_mxf, sub_in, sub_dur) in enumerate(sub_clips):
+            audio_mxf = sub_mxf.parent.parent / "AUDIO" / f"{sub_mxf.stem}{channel_idx:02d}.MXF"
+            if not audio_mxf.exists():
+                audio_mxf = sub_mxf.parent.parent / "AUDIO" / f"{sub_mxf.stem}{channel_idx:02d}.mxf"
 
-        segment_files.append(out_f)
-        t_end_frame = t_start + dur
-        segment_map.append((
-            audio_cursor,
-            audio_cursor + dur_secs,
-            t_start,
-            t_end_frame,
-        ))
-        audio_cursor += dur_secs
+            start_secs = sub_in  / FPS
+            dur_secs   = sub_dur / FPS
+            out_f      = tmp_dir / f"seg_{i:04d}_{j:02d}.wav"
+
+            cmd = [
+                "ffmpeg", "-loglevel", "error",
+                "-ss", str(start_secs), "-i", str(audio_mxf),
+                "-t", str(dur_secs),
+                "-map", "0:a:0",
+                "-ar", "16000",
+                "-ac", "1",
+                str(out_f),
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode != 0 or not out_f.exists():
+                print(f"  [WARN] ffmpeg failed for {audio_mxf.name}: "
+                      f"{result.stderr[:80].decode()}")
+                t_cursor += sub_dur
+                continue
+
+            segment_files.append(out_f)
+            segment_map.append((
+                audio_cursor,
+                audio_cursor + dur_secs,
+                t_cursor,
+                t_cursor + sub_dur,
+            ))
+            audio_cursor += dur_secs
+            t_cursor     += sub_dur
 
     # Concatenate all segments into one WAV
     concat_wav = tmp_dir / "full_audio.wav"
