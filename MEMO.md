@@ -17,12 +17,16 @@ into a fresh Premiere Pro project.
 2. sync_audios — Synchronize multiple camera angles (e.g., camera 1 & 2
    rushes) using ONLY audio waveform analysis (no timecode, no metadata).
 3. remove_silence — Detect and cut silent sections from the timeline.
-4. create_transcript — Generate a transcript of the spoken audio with
-   word-level timestamps. Spoken language: French.
-5. remove_fillers — Using the transcript, detect and remove:
-   - Filler sounds: "Aaaah", "Euuuh", "Beeen", "Hmm", etc.
-   - Verbal tics: words/phrases the speaker repeats abnormally often
-     (e.g., "du coup", "en fait") are treated as tics and removed.
+4. detect_framing — CV pass (OpenCV Haar) over the MAIN video: is the
+   speaker's face visible? Caches OUTPUT/main_framing.json.
+5. switch_angles — Stay on MAIN; hard-cut to the DIV wide angle where no
+   face is detected, cutting ~1s early and snapping to pauses. Only the
+   MAIN video track is disabled. Output OUTPUT/04_angles.xml.
+
+Parked (moved to maybe_later/): create_transcript + remove_fillers —
+Whisper strips fillers during transcription, so the transcript-driven
+remover had nothing to act on. A future audio-based remover may replace
+them. See maybe_later/NOTES.md.
 
 ## Reference files
 - sync_example.xml — reference of the expected output format

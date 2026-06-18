@@ -9,9 +9,13 @@ Solo conference recording with 2 cameras (MAIN CAM = active/primary, DIV CAM = w
 Each conference = its own cloned project folder. Paths are hardcoded to `INPUT/MAIN CAM/`, `INPUT/DIV CAM/`, and `OUTPUT/`. Configurable `--main-cam` / `--div-cam` path args are a post-beta enhancement.
 
 ## Architecture
-6 separate Python tools in `tools/`, one per stage. Each follows the WAT `_template.py` pattern (argparse, .env loading, output to `OUTPUT/`). Stages are run manually in sequence. Stage 5 only *disables* fillers/tics; the editor reviews in Premiere and exports a reviewed XML, then Stage 6 commits it into the final cut.
+Separate Python tools in `tools/`, one per stage. Each follows the WAT `_template.py` pattern (argparse, .env loading, output to `OUTPUT/`). Stages are run manually in sequence. Camera-angle switching (Stage 4–5 below) only *disables MAIN video* so the DIV angle shows; the editor reviews in Premiere and exports a reviewed XML, then Stage 6 commits it into the final cut.
 
-**Stage flow:**
+**Set aside (see `maybe_later/`):** `create_transcript` (old Stage 4) and `remove_fillers` (old Stage 5)
+are parked — Whisper strips disfluencies during transcription, so a transcript-driven filler remover has
+nothing to act on. A future *audio-based* filler remover would replace them. Detail: `maybe_later/NOTES.md`.
+
+**Stage flow (current):**
 ```
 INPUT/MAIN CAM/ + INPUT/DIV CAM/
         ↓ create_xml.py
@@ -20,13 +24,13 @@ OUTPUT/01_create.xml
 OUTPUT/02_sync.xml
         ↓ remove_silence.py
 OUTPUT/03_silence.xml
-        ↓ create_transcript.py
-OUTPUT/04_transcript.json
-        ↓ remove_fillers.py   (disable-only: fillers/tics → <enabled>FALSE</enabled>)
-OUTPUT/05_fillers.xml
-        ↓ [import to Premiere → re-enable false positives, disable bad takes → export]
+        ↓ detect_framing.py    (CV: is the speaker's face visible on MAIN?)
+OUTPUT/main_framing.json
+        ↓ switch_angles.py     (hard-cut to DIV where no face; pre-roll + snap-to-pause; only MAIN video disabled)
+OUTPUT/04_angles.xml
+        ↓ [import to Premiere → review, disable bad takes → export]
 OUTPUT/06_reviewed.xml
-        ↓ delete_enable_clip.py   (ripple-delete spans dead on all tracks)
+        ↓ delete_enable_clip.py   (ripple-delete spans dead on all tracks; camera switches preserved)
 OUTPUT/07_final.xml   ← final import into Premiere
 ```
 
@@ -106,7 +110,10 @@ OUTPUT/07_final.xml   ← final import into Premiere
 
 ---
 
-## Stage 4 — `tools/create_transcript.py`
+## Parked (→ `maybe_later/`) — `create_transcript.py`  *(was Stage 4)*
+
+> **Set aside 2026-06-18.** Whisper strips disfluencies during transcription, so the transcript→filler
+> path is a dead end; see `maybe_later/NOTES.md`. Original design kept below for reference.
 
 **What it does:** Generates a word-level French transcript from the clean audio using local Whisper.
 
@@ -134,7 +141,10 @@ OUTPUT/07_final.xml   ← final import into Premiere
 
 ---
 
-## Stage 5 — `tools/remove_fillers.py`
+## Parked (→ `maybe_later/`) — `remove_fillers.py`  *(was Stage 5)*
+
+> **Set aside 2026-06-18.** Useless/wrong output: its transcript input has no fillers because Whisper
+> already removed them. A future *audio-based* remover would replace it; see `maybe_later/NOTES.md`.
 
 **What it does:** Detects filler sounds and verbal tics and **disables** them on every track
 (split clip + `<enabled>FALSE</enabled>`). Disable-only — it never ripples or deletes. The
@@ -194,33 +204,70 @@ disabled (camera switch) is preserved.
 
 ---
 
-## Future — Stage 7+ camera-angle switching (not built yet)
+## Stage 4 — `tools/detect_framing.py` (camera switching, part 1)
 
-A later tool will manage the **video** tracks: detect whether the speaker is well framed in a
-given camera and switch MAIN↔DIV across cuts so jump cuts are masked (the main lever for a
-smooth-looking edit). Recorded now so the current design doesn't foreclose it:
+**What it does:** Samples the MAIN video over the silence-trimmed timeline and runs OpenCV Haar face
+detection to answer, per sampled instant, "is the speaker's face visible on MAIN?". Caches the signal so
+the switch thresholds can be re-tuned without re-running the slow CV pass.
 
-- **No conflict with Stages 5–6.** `<enabled>FALSE</enabled>` already carries two meanings and
-  `delete_enable_clip.py` distinguishes them: *all tracks disabled* = remove (filler/silence);
-  *one video track disabled* = camera switch (**preserved**). Angle switching is therefore just
-  toggling which video track is enabled.
-- **Insertion point:** after the final cut — operate on `07_final.xml` → `08_angles.xml` — so
-  switches land on the real edit points.
-- **Invariant to protect:** the camera tool must only ever disable *video* tracks, never all
-  tracks and never audio. As long as that holds, removal and angle-switching stay separable.
+**Algorithm:**
+1. Parse `OUTPUT/03_silence.xml`; find the MAIN **video** track by `file/pathurl` containing `MAIN%20CAM`.
+2. Per MAIN clipitem, map timeline `[start,end]` → source `[in,out]` and resolve the P2 spanned chain
+   (`remove_silence._resolve_p2_chain`) → physical `VIDEO/*.MXF` slices (H.264 at stream 0, decodable).
+3. Extract frames at `--fps` (default 4), downscaled to `--scale` width (default 640), via an
+   `ffmpeg … -f image2pipe -vcodec mjpeg pipe:1`, decoded with `cv2.imdecode`.
+4. Detect the speaker with **frontal + profile Haar cascades** (profile on the frame and its mirror, from
+   `cv2.data.haarcascades`); `face_present = any cascade fires` above a `--min-face` size floor. Profile
+   detection is what keeps a head-turn counting as "face visible" under the conservative rule.
+
+**Output:** `OUTPUT/main_framing.json` — `{fps, params, samples:[{timeline_frame, face_present}, …]}`.
+
+**CLI:** `--input`, `--output`, `--fps` (4), `--scale` (640), `--min-face`, `--neighbors`/`--min-size`,
+`--start`/`--end`/`--max-frames`.
+
+---
+
+## Stage 5 — `tools/switch_angles.py` (camera switching, part 2)
+
+**What it does:** Turns the framing signal into a multicam timeline: stays on MAIN, hard-cuts to DIV
+where no face is detected, cutting ~1 s early and snapping to pauses. **Only ever disables MAIN video** —
+never DIV, never audio, never all tracks — so `delete_enable_clip.py` still reads each switch as
+"preserve" (one video track disabled = camera switch). Reveals DIV by splitting + disabling the MAIN clip
+via `remove_silence._apply_one_cut([main_video_track], s, e, mode="mute", id_counter)`.
+
+**Decision logic (order matters):** face signal → **trigger** filter (no-face ≥ `--trigger` s qualifies a
+run; face ≥ `--return` s ends it) → **pre/post-roll** (`--pre-roll` 1.0, `--post-roll` 0.75) → **snap**
+each boundary to the nearest MAIN edit point (silence cut) within `--snap-tolerance` (0.75) → **merge**
+overlaps → enforce **`--min-shot`** 1.0 s (merge windows separated by a sub-1 s MAIN gap) → split-and-
+disable MAIN per window.
+
+**Output:** `OUTPUT/04_angles.xml` (same `<duration>` as `03_silence.xml` — disable-only, no ripple).
+
+**CLI:** `--input`, `--framing`, `--output`, `--trigger`, `--return`, `--pre-roll`, `--post-roll`,
+`--snap-tolerance`, `--min-shot`, `-y/--yes`.
+
+**Workflow:** `workflows/switch_angles.md`. **Test:** `tools/test_switch_angles.py`.
+
+**Future polish (not beta):** cross-dissolve transitions (opacity ramp on MAIN); DIV punch-in (scale to
+tighten the wide shot); CLAHE/equalized detection frames; eye/gaze-based framing instead of any-face.
+
+**Invariant to protect:** the camera tools must only ever disable *video* tracks, never all tracks and
+never audio. As long as that holds, removal (Stage 6) and angle-switching stay separable.
 
 ---
 
 ## Dependencies to add to `requirements.txt`
 ```
-faster-whisper
+faster-whisper   # parked (maybe_later/) — only for create_transcript
 librosa
 scipy
 numpy
 lxml
 ffmpeg-python
+opencv-python    # Stage 4 detect_framing — Haar cascades ship in cv2.data.haarcascades
 ```
 Note: `ffmpeg` binary must be installed on the system (`brew install ffmpeg`).
+Note: `opencv-python` 4.13 confirmed importing on the project's Python 3.14.
 
 ---
 
@@ -236,6 +283,6 @@ Note: `ffmpeg` binary must be installed on the system (`brew install ffmpeg`).
 1. Run `create_xml.py` → open `OUTPUT/01_create.xml` in Premiere, confirm both cameras appear on V1/V2 with correct clip count and durations
 2. Run `sync_audios.py` → open `OUTPUT/02_sync.xml`, scrub timeline, confirm clap/transient aligns across cameras
 3. Run `remove_silence.py` → open `OUTPUT/03_silence.xml`, confirm dead air is gone, speech is unclipped
-4. Run `create_transcript.py` → open `OUTPUT/04_transcript.json`, spot-check 5–10 words against audio
-5. Run `remove_fillers.py` → open `OUTPUT/05_fillers.xml` (same length as `03`), confirm flagged fillers/tics show as disabled; re-enable false positives, disable bad takes, export `OUTPUT/06_reviewed.xml`
+4. Run `detect_framing.py` → check `OUTPUT/main_framing.json`: printed face-coverage % and longest no-face stretch match what you know of the footage
+5. Run `switch_angles.py` → open `OUTPUT/04_angles.xml` (same length as `03`), confirm it holds on MAIN and cuts to DIV ~1 s before the speaker leaves frame (on a pause), no shot < 1 s; review, disable bad takes, export `OUTPUT/06_reviewed.xml`
 6. Run `delete_enable_clip.py` → open `OUTPUT/07_final.xml`, confirm dead air is gone, camera switches are preserved, and the timeline plays clean
