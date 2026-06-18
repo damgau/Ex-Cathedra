@@ -6,14 +6,16 @@ Automates the repetitive editing work for solo conference recordings shot with 2
 
 ```
 INPUT/MAIN CAM/ + INPUT/DIV CAM/
-        ↓ tools/create_xml.py       →  OUTPUT/01_create.xml
-        ↓ tools/sync_audios.py      →  OUTPUT/02_sync.xml
-        ↓ tools/remove_silence.py   →  OUTPUT/03_silence.xml
-        ↓ tools/create_transcript.py→  OUTPUT/04_transcript.json
-        ↓ tools/remove_fillers.py   →  OUTPUT/05_fillers.xml  ← import into Premiere
+        ↓ tools/create_xml.py        →  OUTPUT/01_create.xml
+        ↓ tools/sync_audios.py       →  OUTPUT/02_sync.xml
+        ↓ tools/remove_silence.py    →  OUTPUT/03_silence.xml
+        ↓ tools/create_transcript.py →  OUTPUT/04_transcript.json
+        ↓ tools/remove_fillers.py    →  OUTPUT/05_fillers.xml   (fillers/tics disabled, not cut)
+        ↓ [review in Premiere → export] OUTPUT/06_reviewed.xml
+        ↓ tools/delete_enable_clip.py→  OUTPUT/07_final.xml  ← final import into Premiere
 ```
 
-Each stage reads the previous stage's output. Run them in order, validate in Premiere, then proceed.
+Each stage reads the previous stage's output. Run them in order, validate in Premiere, then proceed. Stage 5 only *disables* fillers/tics so you can review and correct them in Premiere; Stage 6 ripple-deletes whatever you left disabled into the final cut.
 
 ## Stages
 
@@ -23,7 +25,8 @@ Each stage reads the previous stage's output. Run them in order, validate in Pre
 | 2 | `sync_audios.py` | Detects the cleanest audio channel, cross-correlates cameras, shifts one track to align |
 | 3 | `remove_silence.py` | Detects pauses ≥ 1.5s on the clean channel, cuts or mutes them across all tracks |
 | 4 | `create_transcript.py` | Runs `faster-whisper` (large-v3, French) on post-cut audio, outputs word-level timestamps |
-| 5 | `remove_fillers.py` | Removes fixed fillers (`euh`, `ah`, `bah` …) and detected verbal tics from the timeline |
+| 5 | `remove_fillers.py` | *Disables* (no cut) fixed fillers + stutters by default; verbal tics are opt-in, with connectives (`donc`, `alors`…) demoted to avoid choppy over-cutting |
+| 6 | `delete_enable_clip.py` | Ripple-deletes spans disabled on every track from the reviewed export; preserves multicam camera switches |
 
 ## Setup
 
