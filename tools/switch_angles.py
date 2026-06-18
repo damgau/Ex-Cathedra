@@ -228,6 +228,12 @@ def main():
     if seq is None:
         sys.exit("[ERROR] No <sequence> found — is this an xmeml export?")
 
+    # Rename the deliverable: the Stage-1/2 working name "sync" rides through
+    # every stage. This is the final stage, so label it for what it is.
+    name_el = seq.find("name")
+    if name_el is not None:
+        name_el.text = "switch_angles"
+
     main_track = _find_video_track(seq, "MAIN CAM")
     div_track  = _find_video_track(seq, "DIV CAM")
     if main_track is None:
@@ -276,10 +282,9 @@ def main():
         print(f"        ... and {len(windows) - 15} more")
 
     if not windows:
-        print("\n  No camera switches — copying input to output unchanged.")
+        print("\n  No camera switches — writing input through unchanged (renamed sequence only).")
         OUTPUT_DIR.mkdir(exist_ok=True)
-        import shutil
-        shutil.copy(input_path, output_path)
+        tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")
         print(f"[OK] Written: {output_path}")
         return
 
