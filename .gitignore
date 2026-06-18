@@ -6,8 +6,7 @@ token.json
 # Temporary / intermediate files (disposable; keep the placeholder)
 .tmp/*
 !.tmp/.gitkeep
-tmp/Adobe Premiere Pro Auto-Save/
-tmp/Adobe Premiere Pro Auto-Save/IA.prproj
+tmp/
 
 # Project folders
 INPUT/
