@@ -10,7 +10,7 @@ tmp/
 
 # Project folders
 INPUT/
-OUPUT/
+OUTPUT/
 
 # Python
 __pycache__/
