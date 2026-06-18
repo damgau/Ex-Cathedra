@@ -20,5 +20,6 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv_whisper/
 venv/
 env/

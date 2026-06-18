@@ -93,6 +93,27 @@ def _resolve_p2_chain(mxf: Path, source_in: int, duration: int) -> list:
 # Audio reconstruction from post-silence XML
 # ---------------------------------------------------------------------------
 
+def _localize_pathurl(furl_text: str) -> Path:
+    """
+    Decode an FCP pathurl and re-anchor it onto the local project root.
+
+    Sequences exported on macOS embed absolute paths such as
+        /Volumes/LaCie/MATELE/EX Cathedra/00_AI_project/INPUT/MAIN CAM/VIDEO/1111K6.MXF
+    which don't resolve on Windows (where the project lives under G:\\...).
+    Since all media lives under BASE_DIR/INPUT, we re-anchor on the first
+    'INPUT' path component so the XML stays portable across machines.
+    """
+    raw = unquote(furl_text.replace("file://localhost", "")).replace("\\", "/")
+    parts = raw.split("/")
+    if "INPUT" in parts:
+        idx = parts.index("INPUT")
+        return BASE_DIR.joinpath(*parts[idx:])
+    # Fallback: strip the leading slash before a Windows drive letter (/G:/… → G:/…)
+    if len(raw) > 2 and raw[0] == "/" and raw[2] == ":":
+        raw = raw[1:]
+    return Path(raw)
+
+
 def _get_cam_clips_for_audio(seq: ET.Element, cam_label: str) -> list:
     """
     Return ordered list of:
@@ -117,10 +138,7 @@ def _get_cam_clips_for_audio(seq: ET.Element, cam_label: str) -> list:
             furl = item.find("file/pathurl")
             if furl is None or not furl.text:
                 continue
-            raw = unquote(furl.text.replace("file://localhost", ""))
-            if len(raw) > 2 and raw[0] == "/" and raw[2] == ":":
-                raw = raw[1:]
-            p = Path(raw)
+            p = _localize_pathurl(furl.text)
             start_el = item.find("start")
             in_el    = item.find("in")
             end_el   = item.find("end")
