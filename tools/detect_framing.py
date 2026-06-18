@@ -37,6 +37,7 @@ import xml.etree.ElementTree as ET
 # Reuse the P2 spanned-chain resolver from Stage 3.
 sys.path.insert(0, str(Path(__file__).parent))
 from remove_silence import _resolve_p2_chain   # noqa: E402
+from progress import ProgressReporter           # noqa: E402
 
 BASE_DIR   = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "OUTPUT"
@@ -181,11 +182,20 @@ def main():
     end_f   = int(args.end   * FPS) if args.end   is not None else None
     detector = FaceDetector(args.min_face, args.neighbors)
 
+    # Expected sample count drives the progress %/ETA. The window is the kept
+    # footage in seconds (clamped to any --start/--end), sampled at args.fps.
+    win_start_s = args.start if args.start is not None else 0.0
+    win_end_s   = args.end   if args.end   is not None else total_frames / FPS
+    expected = max(1, int(round((win_end_s - win_start_s) * args.fps)))
+    if args.max_frames:
+        expected = min(expected, args.max_frames)
+    rep = ProgressReporter(output_path, total=expected, label="detect_framing")
+
     print(f"[2/3] Sampling at {args.fps} fps (scale={args.scale}px, "
           f"min-face={args.min_face}, neighbors={args.neighbors})...")
     samples = []
     stop = False
-    for (t_start, src_in, dur, mxf) in clips:
+    for ci, (t_start, src_in, dur, mxf) in enumerate(clips, 1):
         if stop:
             break
         cursor = src_in    # chain-global source frame at the slice start
@@ -210,6 +220,7 @@ def main():
                         continue
                     samples.append({"timeline_frame": int(tf),
                                     "face_present": detector.present(img)})
+                    rep.update(len(samples), message=f"clip {ci}/{len(clips)}")
                     if args.max_frames and len(samples) >= args.max_frames:
                         stop = True
                         break
@@ -220,6 +231,7 @@ def main():
             print(f"      ... {len(samples)} samples")
 
     if not samples:
+        rep.fail("no frames sampled")
         sys.exit("[ERROR] No frames sampled — check ffmpeg and MXF paths above.")
 
     samples.sort(key=lambda s: s["timeline_frame"])
@@ -249,6 +261,7 @@ def main():
     }
     OUTPUT_DIR.mkdir(exist_ok=True)
     output_path.write_text(json.dumps(result), encoding="utf-8")
+    rep.done(message=f"{len(samples)} samples, face {n_face/len(samples):.0%}")
     print(f"[OK] Written: {output_path}")
 
 

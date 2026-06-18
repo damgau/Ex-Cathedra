@@ -26,6 +26,9 @@ from scipy.signal import correlate
 import xml.etree.ElementTree as ET
 ET.register_namespace("", "")
 
+sys.path.insert(0, str(Path(__file__).parent))
+from progress import ProgressReporter   # noqa: E402
+
 BASE_DIR    = Path(__file__).parent.parent
 OUTPUT_DIR  = BASE_DIR / "OUTPUT"
 
@@ -108,17 +111,20 @@ def _mxf_files_from_xml(xml_path: Path, cam_label: str) -> list[Path]:
 
 
 def extract_audio_channel(mxf_files: list[Path], channel: int,
-                           max_secs: int = SAMPLE_SECS) -> np.ndarray:
+                           max_secs: int = SAMPLE_SECS,
+                           reporter=None, phase: str = "") -> np.ndarray:
     """
     Extract `max_secs` of mono audio from `channel` (1-based) across the P2
     clip chain rooted at each video MXF, downsampled to SAMPLE_RATE Hz.
     Audio lives in AUDIO/{stem}{channel-1:02d}.MXF — never the video MXF.
+
+    `reporter`/`phase` (optional): emit a per-file liveness note for watchers.
     """
     target_samples = max_secs * SAMPLE_RATE
     pcm_chunks = []
     collected  = 0
 
-    for video_mxf in mxf_files:
+    for fi, video_mxf in enumerate(mxf_files, 1):
         audio_chain = _walk_p2_audio_chain(video_mxf, channel)
         for audio_mxf in audio_chain:
             if collected >= target_samples:
@@ -140,6 +146,8 @@ def extract_audio_channel(mxf_files: list[Path], channel: int,
             chunk = np.frombuffer(result.stdout, dtype=np.float32)
             pcm_chunks.append(chunk)
             collected += len(chunk)
+        if reporter is not None and phase:
+            reporter.note(f"{phase} file {fi}/{len(mxf_files)}")
 
     return np.concatenate(pcm_chunks) if pcm_chunks else np.array([], dtype=np.float32)
 
@@ -309,6 +317,7 @@ def main():
         sys.exit(f"[ERROR] Input not found: {input_path}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
+    rep = ProgressReporter(output_path, label="sync_audios")
 
     print(f"[1/5] Parsing {input_path.name}...")
     main_mxfs = _mxf_files_from_xml(input_path, "MAIN CAM")
@@ -374,13 +383,16 @@ def main():
     print(f"      Using MAIN CAM CH{main_ch} and DIV CAM CH{div_ch}")
 
     main_audio = extract_audio_channel(main_mxfs, channel=main_ch,
-                                       max_secs=SAMPLE_SECS)
+                                       max_secs=SAMPLE_SECS,
+                                       reporter=rep, phase="extract MAIN")
     div_audio  = extract_audio_channel(div_mxfs,  channel=div_ch,
-                                       max_secs=SAMPLE_SECS)
+                                       max_secs=SAMPLE_SECS,
+                                       reporter=rep, phase="extract DIV")
     print(f"      MAIN CAM: {len(main_audio)/SAMPLE_RATE:.1f}s extracted")
     print(f"      DIV  CAM: {len(div_audio)/SAMPLE_RATE:.1f}s extracted")
 
     print("\n[4/5] Computing cross-correlation...")
+    rep.note("cross-correlation")
     # main_lead_frames = how many frames MAIN started BEFORE DIV.
     #   > 0: MAIN started first → DIV is the later camera → shift DIV forward
     #   < 0: DIV started first  → MAIN is the later camera → shift MAIN forward
@@ -408,6 +420,7 @@ def main():
     shift_camera_clips(seq, cam_to_shift, offset)
 
     tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")
+    rep.done(f"{cam_to_shift} shifted +{offset} frames")
     print(f"[OK] Written: {output_path}")
     print(f"\nNext step: open OUTPUT/02_sync.xml in Premiere, scrub the")
     print(f"timeline and confirm audio aligns across both cameras.")

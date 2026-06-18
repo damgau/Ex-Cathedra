@@ -20,6 +20,9 @@ load_dotenv()
 import numpy as np
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).parent))
+from progress import ProgressReporter   # noqa: E402
+
 BASE_DIR     = Path(__file__).parent.parent
 OUTPUT_DIR   = BASE_DIR / "OUTPUT"
 
@@ -133,7 +136,7 @@ def _get_cam_clips(seq: ET.Element, cam_label: str) -> list:
     return []
 
 
-def extract_timeline_audio(cam_clips: list, channel: int) -> tuple:
+def extract_timeline_audio(cam_clips: list, channel: int, reporter=None) -> tuple:
     """
     Extract and concatenate audio for the clean camera's clips.
     Returns (audio_array, timeline_start_frame).
@@ -142,11 +145,13 @@ def extract_timeline_audio(cam_clips: list, channel: int) -> tuple:
       VIDEO/0158Q5.MXF  →  AUDIO/0158Q500.MXF (CH1), 0158Q501.MXF (CH2), …
     When a single clipitem spans a P2 chain, _resolve_p2_chain expands it
     into per-physical-file slices before extraction.
+
+    `reporter` (optional ProgressReporter) is updated once per clip.
     """
     chunks = []
     channel_idx = channel - 1
 
-    for (t_start, mxf, src_in, dur) in cam_clips:
+    for ci, (t_start, mxf, src_in, dur) in enumerate(cam_clips, 1):
         sub_clips = _resolve_p2_chain(mxf, src_in, dur)
         for (sub_mxf, sub_in, sub_dur) in sub_clips:
             audio_mxf = sub_mxf.parent.parent / "AUDIO" / f"{sub_mxf.stem}{channel_idx:02d}.MXF"
@@ -167,6 +172,8 @@ def extract_timeline_audio(cam_clips: list, channel: int) -> tuple:
                 print(f"  [WARN] ffmpeg error on {audio_mxf.name}: {result.stderr[:100].decode()}")
                 continue
             chunks.append(np.frombuffer(result.stdout, dtype=np.float32))
+        if reporter is not None:
+            reporter.update(ci, message=f"extracting clip {ci}/{len(cam_clips)}")
 
     audio = np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
     return audio, cam_clips[0][0] if cam_clips else 0
@@ -430,7 +437,8 @@ def main():
     if not clips:
         sys.exit(f"[ERROR] No clips found for {cam} in {input_path}")
     print(f"      {len(clips)} clips, starting at frame {clips[0][0]}")
-    audio, t_offset = extract_timeline_audio(clips, channel)
+    rep = ProgressReporter(output_path, total=len(clips), label="remove_silence")
+    audio, t_offset = extract_timeline_audio(clips, channel, reporter=rep)
     print(f"      Extracted {len(audio)/SAMPLE_RATE:.1f}s of audio "
           f"(timeline offset: {t_offset} frames)")
 
@@ -438,6 +446,7 @@ def main():
           f"(threshold={args.silence_threshold}dBFS, "
           f"min={args.silence_min_duration}s, "
           f"padding={args.silence_padding}s)...")
+    rep.note("detecting silence")
     cuts = detect_silence_frames(
         audio, t_offset,
         threshold_db=args.silence_threshold,
@@ -457,14 +466,17 @@ def main():
         print("  No silence detected — copying input to output unchanged.")
         import shutil
         shutil.copy(input_path, output_path)
+        rep.done("no silence detected")
         print(f"[OK] Written: {output_path}")
         return
 
     print(f"\n[4/4] Applying {len(cuts)} cuts (mode={args.mode})...")
+    rep.note(f"applying {len(cuts)} cuts")
     apply_cuts(seq, cuts, mode=args.mode)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")
+    rep.done(f"{len(cuts)} cuts, {total_cut_frames/FPS:.1f}s removed")
     print(f"[OK] Written: {output_path}")
     new_dur = int(seq.find("duration").text)
     print(f"     New sequence duration: {new_dur} frames "
