@@ -2,9 +2,11 @@
 """
 Stage 5 — switch_angles.py
 Content-aware camera switching. Reads the silence-trimmed timeline plus the
-MAIN-framing signal from detect_framing.py and produces a multicam cut that
-stays on MAIN and hard-cuts to the DIV (wide) angle wherever no face is visible
-on MAIN — cutting ~1s early and snapping each cut to the nearest pause.
+MAIN speaker-presence signal from detect_framing.py and produces a multicam cut
+that stays on MAIN and hard-cuts to the DIV (safety) angle only where the speaker
+is OUT of MAIN's frame — cutting ~1s early and snapping each cut to the nearest
+pause. The speaker merely turning to his slides is still "present" → we stay on
+MAIN (that's the whole point of switching from face- to person-detection).
 
 Mechanic: MAIN (V2) is the top video track, so to reveal DIV (V1) for a window
 [s, e] we split + DISABLE MAIN's clip across it (DIV underneath shows through).
@@ -82,20 +84,20 @@ def _edit_points(track: ET.Element) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Framing signal → DIV windows
+# Presence signal → DIV windows
 # ---------------------------------------------------------------------------
 
 def detect_div_runs(samples: list, timeline_end: int,
                     trigger_frames: int, return_frames: int) -> list:
     """
-    Debounced state machine over the per-sample face_present signal.
+    Debounced state machine over the per-sample speaker-presence signal.
 
     Returns the natural DIV windows [(start_frame, end_frame), ...]:
-      - enter DIV only after the face is absent for >= trigger_frames
+      - enter DIV only after the speaker is absent for >= trigger_frames
         (window starts where the absence began),
-      - return to MAIN only after the face is present for >= return_frames
-        (window ends where the face came back).
-    This filters blinks / single dropped detections / quick glances.
+      - return to MAIN only after the speaker is present for >= return_frames
+        (window ends where he came back).
+    This filters single dropped detections / momentary occlusions.
     """
     samples = sorted(samples, key=lambda s: s["timeline_frame"])
     runs = []
@@ -105,7 +107,7 @@ def detect_div_runs(samples: list, timeline_end: int,
 
     for s in samples:
         f = s["timeline_frame"]
-        present = bool(s["face_present"])
+        present = bool(s["speaker_present"])
 
         if state == "MAIN":
             if not present:
@@ -191,20 +193,23 @@ def shape_windows(runs: list, edit_points: list, timeline_end: int,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Stage 5: hard-cut to DIV where no face is visible on MAIN, "
-                    "with pre-roll + snap-to-pause. Disable-only (MAIN video)."
+        description="Stage 5: hard-cut to DIV where the speaker is out of MAIN's "
+                    "frame, with pre-roll + snap-to-pause. Disable-only (MAIN video)."
     )
-    parser.add_argument("--input",   default=str(OUTPUT_DIR / "03_silence.xml"))
-    parser.add_argument("--framing", default=str(OUTPUT_DIR / "main_framing.json"))
+    parser.add_argument("--input",    default=str(OUTPUT_DIR / "03_silence.xml"))
+    parser.add_argument("--presence", default=str(OUTPUT_DIR / "main_presence.json"))
     parser.add_argument("--output",  default=str(OUTPUT_DIR / "04_angles.xml"))
+    # Timing defaults validated on a stress-test conference with 14 real walk-offs:
+    # caught 13/14 as substantial DIV windows (>=3.2s) with zero false cuts. They
+    # are MAIN-biased — on a normal (stationary-speaker) talk they fire ~never.
     parser.add_argument("--trigger", type=float, default=1.0, metavar="s",
-                        help="No-face must last >= this to switch to DIV (default 1.0)")
+                        help="Speaker must be absent >= this to switch to DIV (default 1.0)")
     parser.add_argument("--return", dest="return_s", type=float, default=1.0, metavar="s",
-                        help="Face must return for >= this to switch back (default 1.0)")
+                        help="Speaker must be back >= this to switch back to MAIN (default 1.0)")
     parser.add_argument("--pre-roll", type=float, default=1.0, metavar="s",
-                        help="Cut to DIV this long BEFORE the face leaves (default 1.0)")
+                        help="Cut to DIV this long BEFORE he leaves frame (default 1.0)")
     parser.add_argument("--post-roll", type=float, default=0.75, metavar="s",
-                        help="Hold DIV this long after the face returns (default 0.75)")
+                        help="Hold DIV this long after he returns (default 0.75)")
     parser.add_argument("--snap-tolerance", type=float, default=0.75, metavar="s",
                         help="Snap each cut to a pause within this distance (default 0.75)")
     parser.add_argument("--min-shot", type=float, default=1.0, metavar="s",
@@ -213,16 +218,16 @@ def main():
                         help="Skip the final confirmation.")
     args = parser.parse_args()
 
-    input_path   = Path(args.input)
-    framing_path = Path(args.framing)
-    output_path  = Path(args.output)
+    input_path    = Path(args.input)
+    presence_path = Path(args.presence)
+    output_path   = Path(args.output)
 
     if not input_path.exists():
         sys.exit(f"[ERROR] Input not found: {input_path}")
-    if not framing_path.exists():
-        sys.exit(f"[ERROR] Framing signal not found: {framing_path} — run detect_framing.py first")
+    if not presence_path.exists():
+        sys.exit(f"[ERROR] Presence signal not found: {presence_path} — run detect_framing.py first")
 
-    print(f"[1/4] Loading {input_path.name} + {framing_path.name}")
+    print(f"[1/4] Loading {input_path.name} + {presence_path.name}")
     tree = ET.parse(input_path)
     seq  = tree.getroot().find("sequence")
     if seq is None:
@@ -243,24 +248,24 @@ def main():
 
     timeline_end = _timeline_end(seq)
     edit_points  = _edit_points(main_track)
-    framing      = json.loads(framing_path.read_text(encoding="utf-8"))
-    samples      = framing.get("samples", [])
+    presence     = json.loads(presence_path.read_text(encoding="utf-8"))
+    samples      = presence.get("samples", [])
     if not samples:
-        sys.exit("[ERROR] Framing signal has no samples.")
-    n_face = sum(1 for s in samples if s["face_present"])
+        sys.exit("[ERROR] Presence signal has no samples.")
+    n_present = sum(1 for s in samples if s["speaker_present"])
     print(f"      Timeline: {timeline_end} frames ({timeline_end/FPS/60:.1f} min), "
           f"{len(edit_points)} edit points")
-    print(f"      Framing: {len(samples)} samples, face present in "
-          f"{n_face/len(samples):.0%}")
+    print(f"      Presence: {len(samples)} samples, speaker present in "
+          f"{n_present/len(samples):.0%}")
 
-    print("\n[2/4] Detecting no-face runs (trigger="
+    print("\n[2/4] Detecting absent runs (trigger="
           f"{args.trigger}s, return={args.return_s}s)...")
     runs = detect_div_runs(
         samples, timeline_end,
         trigger_frames=round(args.trigger * FPS),
         return_frames=round(args.return_s * FPS),
     )
-    print(f"      {len(runs)} qualified no-face run(s)")
+    print(f"      {len(runs)} qualified absent run(s)")
 
     print(f"\n[3/4] Shaping DIV windows (pre-roll={args.pre_roll}s, "
           f"post-roll={args.post_roll}s, snap<= {args.snap_tolerance}s, "

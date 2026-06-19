@@ -12,6 +12,9 @@ tmp/
 INPUT/
 OUTPUT/
 
+# Downloaded model weights (fetched on demand by tools/fetch_models.py)
+tools/models/
+
 # Python
 __pycache__/
 *.pyc

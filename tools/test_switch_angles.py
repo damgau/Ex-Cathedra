@@ -4,8 +4,8 @@ Regression test for switch_angles — pins the camera-switch invariants without
 needing any video.
 
 Builds a synthetic xmeml sequence (V1=DIV, V2=MAIN both full-length + enabled,
-plus an audio track) and a synthetic MAIN-framing signal with one real no-face
-gap and one sub-trigger blip, then checks:
+plus an audio track) and a synthetic MAIN speaker-presence signal with one real
+out-of-frame exit and one sub-trigger blip, then checks:
 
   - exactly one DIV window is produced (the blip is ignored),
   - pre-roll + snap pull its start earlier AND onto a seeded edit point,
@@ -95,13 +95,13 @@ def _coverage(track, want_enabled):
 def main():
     seq = build_sequence()
 
-    # Framing samples @ 4 fps (every 6 frames). Face present except:
-    #   - real gap [3012, 4500)  -> should switch to DIV
-    #   - blip     [1000, 1018)  -> below trigger, must be ignored
+    # Presence samples @ 4 fps (every 6 frames). Speaker present except:
+    #   - real exit [3012, 4500)  -> out of MAIN frame, should switch to DIV
+    #   - blip      [1000, 1018)  -> below trigger, must be ignored
     samples = []
     for f in range(0, TL_END, 6):
         present = not ((3010 <= f < 4500) or (1000 <= f < 1018))
-        samples.append({"timeline_frame": f, "face_present": present})
+        samples.append({"timeline_frame": f, "speaker_present": present})
 
     runs = detect_div_runs(samples, TL_END,
                            trigger_frames=round(1.0 * FPS),

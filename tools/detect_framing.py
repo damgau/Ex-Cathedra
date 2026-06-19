@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """
 Stage 4 — detect_framing.py
-Samples the MAIN video over the silence-trimmed timeline and runs OpenCV Haar
-face detection to answer, per sampled instant: is the speaker's face visible on
-MAIN? The cached signal drives switch_angles.py (Stage 5).
+Samples the MAIN video over the silence-trimmed timeline and answers, per sampled
+instant: is the SPEAKER present in MAIN's frame?
 
-"Face visible" = a frontal OR profile Haar cascade fires above a size floor, so a
-head-turn still counts as visible (the conservative "any face" rule). Detection
-runs on downscaled frames for speed; this only affects detection, never the final
-output (switch_angles only references the original MXF).
+This is PERSON presence, not face. The dominant "no face" case here is the speaker
+turning to his slides — a perfectly normal presenter-at-the-board shot we want to
+KEEP on MAIN. So we detect the *body* (MobileNet-SSD via cv2.dnn) and only flag
+him ABSENT when he is physically out of MAIN's frame (walked off / leaned out /
+fully occluded). That absence is rare, which is what "keep MAIN as much as
+possible" wants. The cached signal drives switch_angles.py (Stage 5), which cuts
+to the DIV safety angle across the absent windows.
 
-Output: OUTPUT/main_framing.json
+Frames are decoded straight from ffmpeg as raw video into numpy — no JPEG encode +
+temp-dir round-trip (≈2.6x faster). Detection runs on downscaled frames for speed;
+this only affects detection, never the final output (switch_angles references the
+original MXF). Handles both FCP-XML file-reference styles: pathurl repeated per
+clipitem (the project's create_xml output) AND Premiere's <file id> dedup.
+
+Output: OUTPUT/main_presence.json
 """
 
 import sys
 import json
 import argparse
 import subprocess
-import tempfile
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -32,12 +39,14 @@ except (AttributeError, ValueError):
     pass
 
 import cv2
+import numpy as np
 import xml.etree.ElementTree as ET
 
-# Reuse the P2 spanned-chain resolver from Stage 3.
+# Reuse the P2 spanned-chain resolver from Stage 3 + the on-demand model fetch.
 sys.path.insert(0, str(Path(__file__).parent))
 from remove_silence import _resolve_p2_chain   # noqa: E402
 from progress import ProgressReporter           # noqa: E402
+from fetch_models import mobilenet_ssd_paths    # noqa: E402
 
 BASE_DIR   = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "OUTPUT"
@@ -51,7 +60,7 @@ FPS        = 25
 def _localize_pathurl(furl_text: str) -> Path:
     """Decode an FCP pathurl and re-anchor it on the local INPUT/ tree so it
     resolves regardless of the machine the XML was generated on (macOS vs
-    Windows). See panasonic_p2_reference.md §5 and create_transcript's notes."""
+    Windows). See panasonic_p2_reference.md §5."""
     raw = unquote(furl_text.replace("file://localhost", "")).replace("\\", "/")
     parts = raw.split("/")
     if "INPUT" in parts:
@@ -61,40 +70,143 @@ def _localize_pathurl(furl_text: str) -> Path:
     return Path(raw)
 
 
+def _file_pathurl_map(seq: ET.Element) -> dict:
+    """{file_id: pathurl} for every <file id=..> that carries a <pathurl>.
+    Premiere only writes the pathurl on the first clipitem per file; later
+    clipitems reference it by id (<file id=".."/>)."""
+    m = {}
+    for f in seq.iter("file"):
+        fid = f.get("id")
+        pu = f.find("pathurl")
+        if fid and pu is not None and pu.text:
+            m[fid] = pu.text
+    return m
+
+
+def _clip_pathurl(it: ET.Element, fmap: dict):
+    """Resolve a clipitem's pathurl directly or via its <file id> reference."""
+    f = it.find("file")
+    if f is None:
+        return None
+    pu = f.find("pathurl")
+    if pu is not None and pu.text:
+        return pu.text
+    return fmap.get(f.get("id"))
+
+
 def _main_clips(seq: ET.Element) -> list:
     """Return enabled MAIN-CAM video clipitems as
     (timeline_start, source_in, duration, mxf_path), in order."""
+    fmap = _file_pathurl_map(seq)
     vid = seq.find("media/video")
+    main_track = None
     for track in vid.findall("track"):
         items = track.findall("clipitem")
-        if not items:
+        if items and "MAIN%20CAM" in (_clip_pathurl(items[0], fmap) or ""):
+            main_track = track
+            break
+    if main_track is None:
+        return []
+    out = []
+    for it in main_track.findall("clipitem"):
+        en = it.find("enabled")
+        if en is not None and (en.text or "").upper() == "FALSE":
             continue
-        f0 = items[0].find("file/pathurl")
-        if f0 is None or not f0.text or "MAIN%20CAM" not in f0.text:
+        pu = _clip_pathurl(it, fmap)
+        if not pu:
             continue
-        out = []
-        for it in items:
-            en = it.find("enabled")
-            if en is not None and (en.text or "").upper() == "FALSE":
+        t_s = int(it.find("start").text)
+        s_in = int(it.find("in").text)
+        dur = int(it.find("end").text) - t_s
+        if dur > 0:
+            out.append((t_s, s_in, dur, _localize_pathurl(pu)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Frame decode — raw video piped straight from ffmpeg into numpy (no disk)
+# ---------------------------------------------------------------------------
+
+def iter_main_frames(clips: list, fps: float, scale: int,
+                     start_f=None, end_f=None, max_frames=None):
+    """Stream (timeline_frame, bgr_ndarray) across all MAIN clip-segments.
+
+    Footage is anamorphic (1440x1080 stored, displayed 16:9). Scaling to the
+    stored 4:3 geometry squishes the subject horizontally; force the 16:9 display
+    geometry. Yields in timeline order; honours --start/--end/--max-frames and
+    terminates the ffmpeg child on early stop so nothing is left decoding."""
+    h = round(scale * 9 / 16)
+    fsize = scale * h * 3
+    yielded = 0
+    for (t_start, src_in, dur, mxf) in clips:
+        cursor = src_in    # chain-global source frame at the slice start
+        for (sub_mxf, local_in, sub_dur) in _resolve_p2_chain(mxf, src_in, dur):
+            if not sub_mxf.exists():
+                print(f"  [WARN] missing MXF: {sub_mxf}")
+                cursor += sub_dur
                 continue
-            furl = it.find("file/pathurl")
-            if furl is None or not furl.text:
-                continue
-            t_s = int(it.find("start").text)
-            s_in = int(it.find("in").text)
-            dur = int(it.find("end").text) - t_s
-            if dur <= 0:
-                continue
-            out.append((t_s, s_in, dur, _localize_pathurl(furl.text)))
-        return out
-    return []
+            cmd = ["ffmpeg", "-loglevel", "error",
+                   "-ss", str(local_in / FPS), "-i", str(sub_mxf),
+                   "-t", str(sub_dur / FPS),
+                   "-vf", f"fps={fps},scale={scale}:{h}",
+                   "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            k = 0
+            stop = False
+            while True:
+                buf = proc.stdout.read(fsize)
+                if len(buf) < fsize:
+                    break
+                chain_global = cursor + round(k / fps * FPS)
+                tf = t_start + (chain_global - src_in)
+                k += 1
+                if start_f is not None and tf < start_f:
+                    continue
+                if end_f is not None and tf > end_f:
+                    stop = True
+                    break
+                frame = np.frombuffer(buf, np.uint8).reshape(h, scale, 3)
+                yield int(tf), frame
+                yielded += 1
+                if max_frames and yielded >= max_frames:
+                    stop = True
+                    break
+            proc.stdout.close()
+            if stop:
+                proc.terminate(); proc.wait()
+                return
+            proc.wait()
+            cursor += sub_dur
 
 
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
 
+class PersonDetector:
+    """MobileNet-SSD (Caffe) person presence via cv2.dnn. Robust to the speaker
+    standing still, gesturing, turning to slides, or showing a profile — all of
+    which still read as PRESENT. Weights are fetched on demand (gitignored)."""
+    PERSON_CLASS = 15  # PASCAL VOC class index for "person"
+
+    def __init__(self, proto: str, model: str, conf: float = 0.5):
+        self.net = cv2.dnn.readNetFromCaffe(proto, model)
+        self.conf = conf
+
+    def present(self, bgr) -> bool:
+        blob = cv2.dnn.blobFromImage(bgr, 0.007843, (300, 300), 127.5)
+        self.net.setInput(blob)
+        det = self.net.forward()
+        for i in range(det.shape[2]):
+            if det[0, 0, i, 2] > self.conf and int(det[0, 0, i, 1]) == self.PERSON_CLASS:
+                return True
+        return False
+
+
 class FaceDetector:
+    """Haar frontal+profile face detector. NO LONGER the Stage-4 signal (face
+    absence over-fires — the speaker faces his slides constantly). Retained as the
+    over-fire baseline for tools/benchmark_presence.py."""
     def __init__(self, min_face: float, neighbors: int):
         hp = cv2.data.haarcascades
         self.frontal = cv2.CascadeClassifier(hp + "haarcascade_frontalface_default.xml")
@@ -111,32 +223,11 @@ class FaceDetector:
         kw = dict(scaleFactor=1.1, minNeighbors=self.neighbors, minSize=(m, m))
         if len(self.frontal.detectMultiScale(gray, **kw)):
             return True
-        # profile cascade detects one orientation → also try the mirror
         if len(self.profile.detectMultiScale(gray, **kw)):
             return True
         if len(self.profile.detectMultiScale(cv2.flip(gray, 1), **kw)):
             return True
         return False
-
-
-def _extract_frames(mxf: Path, local_in_f: int, dur_f: int,
-                    fps: float, scale: int, tmp: Path) -> list:
-    """ffmpeg-decode a slice to downscaled JPEGs; return sorted file paths."""
-    # Footage is anamorphic (1440x1080 stored, displayed 16:9). Scaling to the
-    # stored 4:3 geometry leaves faces horizontally squished, which hurts Haar.
-    # Force the 16:9 display geometry so faces have natural proportions.
-    cmd = [
-        "ffmpeg", "-loglevel", "error",
-        "-ss", str(local_in_f / FPS), "-i", str(mxf),
-        "-t", str(dur_f / FPS),
-        "-vf", f"fps={fps},scale={scale}:{round(scale * 9 / 16)}",
-        str(tmp / "f_%06d.jpg"),
-    ]
-    r = subprocess.run(cmd, capture_output=True)
-    if r.returncode != 0:
-        print(f"  [WARN] ffmpeg failed on {mxf.name}: {r.stderr[:100].decode(errors='replace')}")
-        return []
-    return sorted(tmp.glob("f_*.jpg"))
 
 
 # ---------------------------------------------------------------------------
@@ -145,16 +236,16 @@ def _extract_frames(mxf: Path, local_in_f: int, dur_f: int,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Stage 4: detect whether the speaker's face is visible on MAIN."
+        description="Stage 4: detect whether the SPEAKER is present in MAIN's frame "
+                    "(person detection; absence is rare and means he left frame)."
     )
     parser.add_argument("--input",  default=str(OUTPUT_DIR / "03_silence.xml"))
-    parser.add_argument("--output", default=str(OUTPUT_DIR / "main_framing.json"))
+    parser.add_argument("--output", default=str(OUTPUT_DIR / "main_presence.json"))
     parser.add_argument("--fps",   type=float, default=4.0, help="Samples/sec (default 4)")
-    parser.add_argument("--scale", type=int,   default=640, help="Detection frame width px (default 640)")
-    parser.add_argument("--min-face", type=float, default=0.08,
-                        help="Min face height as a fraction of frame height (default 0.08)")
-    parser.add_argument("--neighbors", type=int, default=5,
-                        help="Haar minNeighbors (higher = stricter, default 5)")
+    parser.add_argument("--scale", type=int,   default=480,
+                        help="Decode frame width px (default 480; DNN re-blobs to 300x300)")
+    parser.add_argument("--conf",  type=float, default=0.5,
+                        help="Min person-detection confidence (default 0.5)")
     parser.add_argument("--start", type=float, default=None, metavar="s",
                         help="Only analyse timeline from this second")
     parser.add_argument("--end",   type=float, default=None, metavar="s",
@@ -178,12 +269,13 @@ def main():
     print(f"[1/3] MAIN CAM: {len(clips)} clip segments, "
           f"{total_frames/FPS/60:.1f} min of kept footage")
 
+    proto, model = mobilenet_ssd_paths()       # fetched on demand if missing
+    detector = PersonDetector(proto, model, conf=args.conf)
+
     start_f = int(args.start * FPS) if args.start is not None else None
     end_f   = int(args.end   * FPS) if args.end   is not None else None
-    detector = FaceDetector(args.min_face, args.neighbors)
 
-    # Expected sample count drives the progress %/ETA. The window is the kept
-    # footage in seconds (clamped to any --start/--end), sampled at args.fps.
+    # Expected sample count drives the progress %/ETA.
     win_start_s = args.start if args.start is not None else 0.0
     win_end_s   = args.end   if args.end   is not None else total_frames / FPS
     expected = max(1, int(round((win_end_s - win_start_s) * args.fps)))
@@ -191,42 +283,14 @@ def main():
         expected = min(expected, args.max_frames)
     rep = ProgressReporter(output_path, total=expected, label="detect_framing")
 
-    print(f"[2/3] Sampling at {args.fps} fps (scale={args.scale}px, "
-          f"min-face={args.min_face}, neighbors={args.neighbors})...")
+    print(f"[2/3] Sampling at {args.fps} fps (scale={args.scale}px, conf={args.conf}, "
+          f"detector=mobilenet-ssd)...")
     samples = []
-    stop = False
-    for ci, (t_start, src_in, dur, mxf) in enumerate(clips, 1):
-        if stop:
-            break
-        cursor = src_in    # chain-global source frame at the slice start
-        for (sub_mxf, local_in, sub_dur) in _resolve_p2_chain(mxf, src_in, dur):
-            if not sub_mxf.exists():
-                print(f"  [WARN] missing MXF: {sub_mxf}")
-                cursor += sub_dur
-                continue
-            with tempfile.TemporaryDirectory(prefix="excat_frames_") as td:
-                frame_files = _extract_frames(sub_mxf, local_in, sub_dur,
-                                              args.fps, args.scale, Path(td))
-                for k, ff in enumerate(frame_files):
-                    chain_global = cursor + round(k / args.fps * FPS)
-                    tf = t_start + (chain_global - src_in)
-                    if start_f is not None and tf < start_f:
-                        continue
-                    if end_f is not None and tf > end_f:
-                        stop = True
-                        break
-                    img = cv2.imread(str(ff))
-                    if img is None:
-                        continue
-                    samples.append({"timeline_frame": int(tf),
-                                    "face_present": detector.present(img)})
-                    rep.update(len(samples), message=f"clip {ci}/{len(clips)}")
-                    if args.max_frames and len(samples) >= args.max_frames:
-                        stop = True
-                        break
-            cursor += sub_dur
-            if stop:
-                break
+    for tf, frame in iter_main_frames(clips, args.fps, args.scale,
+                                      start_f, end_f, args.max_frames):
+        samples.append({"timeline_frame": int(tf),
+                        "speaker_present": detector.present(frame)})
+        rep.update(len(samples))
         if len(samples) and len(samples) % 500 == 0:
             print(f"      ... {len(samples)} samples")
 
@@ -237,31 +301,31 @@ def main():
     samples.sort(key=lambda s: s["timeline_frame"])
 
     # ---- summary ----
-    n_face = sum(1 for s in samples if s["face_present"])
+    n_present = sum(1 for s in samples if s["speaker_present"])
     longest_gap, run, runs = 0, 0, 0
     for s in samples:
-        if not s["face_present"]:
+        if not s["speaker_present"]:
             if run == 0:
                 runs += 1
             run += 1
             longest_gap = max(longest_gap, run)
         else:
             run = 0
-    print(f"[3/3] {len(samples)} samples — face present {n_face/len(samples):.0%}; "
-          f"{runs} no-face run(s); longest ~{longest_gap/args.fps:.1f}s")
+    print(f"[3/3] {len(samples)} samples — speaker present {n_present/len(samples):.0%}; "
+          f"{runs} absent run(s); longest ~{longest_gap/args.fps:.1f}s")
 
     result = {
         "source": str(input_path),
+        "detector": "mobilenet-ssd",
         "fps": args.fps,
         "scale": args.scale,
-        "min_face": args.min_face,
-        "neighbors": args.neighbors,
+        "conf": args.conf,
         "timeline_fps": FPS,
         "samples": samples,
     }
     OUTPUT_DIR.mkdir(exist_ok=True)
     output_path.write_text(json.dumps(result), encoding="utf-8")
-    rep.done(message=f"{len(samples)} samples, face {n_face/len(samples):.0%}")
+    rep.done(message=f"{len(samples)} samples, present {n_present/len(samples):.0%}")
     print(f"[OK] Written: {output_path}")
 
 
