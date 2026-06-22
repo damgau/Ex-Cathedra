@@ -28,6 +28,7 @@ ET.register_namespace("", "")
 
 sys.path.insert(0, str(Path(__file__).parent))
 from progress import ProgressReporter   # noqa: E402
+from ffbin import ffmpeg                 # noqa: E402
 
 BASE_DIR    = Path(__file__).parent.parent
 OUTPUT_DIR  = BASE_DIR / "OUTPUT"
@@ -104,8 +105,11 @@ def _mxf_files_from_xml(xml_path: Path, cam_label: str) -> list[Path]:
             for item in items:
                 f = item.find("file/pathurl")
                 if f is not None and f.text:
-                    p = Path(unquote(f.text.replace("file://localhost", "")))
-                    paths.append(p)
+                    raw = unquote(f.text.replace("file://localhost", "")).replace("\\", "/")
+                    # Strip leading "/" before a Windows drive letter (/G:/… → G:/…)
+                    if len(raw) > 2 and raw[0] == "/" and raw[2] == ":":
+                        raw = raw[1:]
+                    paths.append(Path(raw))
             break
     return paths
 
@@ -131,7 +135,7 @@ def extract_audio_channel(mxf_files: list[Path], channel: int,
                 break
             remaining_secs = (target_samples - collected) / SAMPLE_RATE
             cmd = [
-                "ffmpeg", "-loglevel", "error",
+                ffmpeg(), "-nostdin", "-loglevel", "error",
                 "-i", str(audio_mxf),
                 "-map", "0:a:0",
                 "-ar", str(SAMPLE_RATE),
@@ -357,18 +361,10 @@ def main():
         print(f"  (MAIN CAM best: CH{main_ch}, score={main_score:.1f}  |  "
               f"DIV CAM best: CH{div_ch}, score={div_score:.1f})")
 
-        answer = input("\n  Proceed? [Y/n] or override [m/d 1-4]: ").strip().lower()
-        if answer.startswith("m"):
-            parts = answer.split()
-            clean_cam = "MAIN CAM"
-            clean_ch  = int(parts[1]) if len(parts) > 1 else main_ch
-        elif answer.startswith("d"):
-            parts = answer.split()
-            clean_cam = "DIV CAM"
-            clean_ch  = int(parts[1]) if len(parts) > 1 else div_ch
-        elif answer in ("n", "no"):
-            sys.exit("[ABORT] Cancelled by user.")
-        # else: Y / empty → keep detected values
+        # Autonomous: accept the detected channel automatically.
+        # Override with --force-camera / --force-channel.
+        print("  Auto-accepting detected channel "
+              "(override with --force-camera / --force-channel).")
 
     print(f"\n  Using: {clean_cam} CH{clean_ch}")
 
@@ -410,10 +406,7 @@ def main():
 
     print(f"      {cam_to_shift} will be shifted by +{offset} frames")
 
-    answer = input("\n  Apply sync? [Y/n]: ").strip().lower()
-    if answer in ("n", "no"):
-        sys.exit("[ABORT] Cancelled by user.")
-
+    # Autonomous: apply the detected offset automatically (no confirmation).
     print("\n[5/5] Applying sync offset to XML...")
     tree = ET.parse(input_path)
     seq  = tree.getroot().find("sequence")

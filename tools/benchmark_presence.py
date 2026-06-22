@@ -44,6 +44,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).parent))
 from remove_silence import _resolve_p2_chain          # noqa: E402
 from detect_framing import _localize_pathurl, FaceDetector, FPS  # noqa: E402
+from ffbin import ffmpeg                                          # noqa: E402
 
 BASE_DIR   = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "OUTPUT"
@@ -125,7 +126,7 @@ def iter_main_frames(clips: list, fps: float, scale: int, max_frames=None):
             if not sub_mxf.exists():
                 cursor += sub_dur
                 continue
-            cmd = ["ffmpeg", "-loglevel", "error",
+            cmd = [ffmpeg(), "-loglevel", "error",
                    "-ss", str(local_in / FPS), "-i", str(sub_mxf),
                    "-t", str(sub_dur / FPS), "-vf", _vf(fps, scale),
                    "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
@@ -164,7 +165,7 @@ def decode_only_jpeg(clips, fps, scale, max_frames=None) -> int:
             if not sub_mxf.exists():
                 continue
             with tempfile.TemporaryDirectory(prefix="bench_jpg_") as td:
-                cmd = ["ffmpeg", "-loglevel", "error",
+                cmd = [ffmpeg(), "-loglevel", "error",
                        "-ss", str(local_in / FPS), "-i", str(sub_mxf),
                        "-t", str(sub_dur / FPS), "-vf", _vf(fps, scale),
                        str(Path(td) / "f_%06d.jpg")]

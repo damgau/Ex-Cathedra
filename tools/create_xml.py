@@ -77,7 +77,11 @@ def mxf_path(video_dir: Path, clip_name: str) -> Path:
 
 
 def pathurl(p: Path) -> str:
-    return "file://localhost" + quote(str(p), safe="/:")
+    # Canonical FCP-XML Windows form (matches what Premiere itself exports):
+    #   file://localhost/G%3A/MATELE/EX%20Cathedra/.../0440RX.MXF
+    # as_posix() forces forward slashes; safe="/" keeps separators but
+    # percent-encodes the drive colon (%3A) and spaces (%20).
+    return "file://localhost/" + quote(p.as_posix(), safe="/")
 
 
 # ---------------------------------------------------------------------------

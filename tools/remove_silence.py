@@ -7,7 +7,6 @@ Output: OUTPUT/03_silence.xml
 
 import sys
 import json
-import copy
 import argparse
 import subprocess
 from pathlib import Path
@@ -21,13 +20,14 @@ import numpy as np
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).parent))
-from progress import ProgressReporter   # noqa: E402
+from progress import ProgressReporter           # noqa: E402
+from timeline import ripple_cut, mute_spans, all_tracks  # noqa: E402
+from ffbin import ffmpeg                                  # noqa: E402
 
 BASE_DIR     = Path(__file__).parent.parent
 OUTPUT_DIR   = BASE_DIR / "OUTPUT"
 
 SAMPLE_RATE      = 8000      # Hz
-TICKS_PER_FRAME  = 10_160_640_000
 FPS              = 25
 P2_NS            = 'urn:schemas-Professional-Plug-in:P2:ClipMetadata:v3.1'
 
@@ -160,7 +160,7 @@ def extract_timeline_audio(cam_clips: list, channel: int, reporter=None) -> tupl
             start_secs = sub_in  / FPS
             dur_secs   = sub_dur / FPS
             cmd = [
-                "ffmpeg", "-loglevel", "error",
+                ffmpeg(), "-loglevel", "error",
                 "-ss", str(start_secs), "-i", str(audio_mxf),
                 "-t", str(dur_secs),
                 "-map", "0:a:0",
@@ -232,166 +232,6 @@ def detect_silence_frames(audio: np.ndarray, timeline_offset: int,
         t_end   = timeline_offset + round(we * 0.01 * FPS)
         result.append((t_start, t_end))
     return result
-
-
-# ---------------------------------------------------------------------------
-# XML clip manipulation helpers
-# ---------------------------------------------------------------------------
-
-def _set_clip_endpoints(item: ET.Element, start: int, end: int,
-                        in_: int, out_: int):
-    dur = out_ - in_
-    item.find("start").text        = str(start)
-    item.find("end").text          = str(end)
-    item.find("in").text           = str(in_)
-    item.find("out").text          = str(out_)
-    item.find("duration").text     = str(dur)
-    item.find("pproTicksIn").text  = str(in_  * TICKS_PER_FRAME)
-    item.find("pproTicksOut").text = str(out_ * TICKS_PER_FRAME)
-
-
-def _next_id(seq: ET.Element) -> int:
-    """Find the highest existing clipitem-N id and return N+1."""
-    max_id = 0
-    for item in seq.iter("clipitem"):
-        attr = item.get("id", "")
-        if attr.startswith("clipitem-"):
-            try:
-                max_id = max(max_id, int(attr.split("-")[1]))
-            except (ValueError, IndexError):
-                pass
-    return max_id + 1
-
-
-def _clone(item: ET.Element, new_id: int) -> ET.Element:
-    cloned = copy.deepcopy(item)
-    cloned.set("id", f"clipitem-{new_id}")
-    return cloned
-
-
-# ---------------------------------------------------------------------------
-# Cut / mute application
-# ---------------------------------------------------------------------------
-
-def _apply_one_cut(all_tracks: list, cut_start: int, cut_end: int,
-                   mode: str, id_counter: int) -> int:
-    """
-    Apply one silence cut [cut_start, cut_end] to every clipitem in all_tracks.
-    Returns updated id_counter.
-    """
-    cut_len = cut_end - cut_start
-
-    for track in all_tracks:
-        to_add    = []
-        to_remove = []
-
-        for item in list(track.findall("clipitem")):
-            s  = int(item.find("start").text)
-            e  = int(item.find("end").text)
-            ci = int(item.find("in").text)
-            co = int(item.find("out").text)
-
-            # --- entirely before cut → unchanged ---
-            if e <= cut_start:
-                pass
-
-            # --- entirely after cut → shift (cut mode only) ---
-            elif s >= cut_end:
-                if mode == "cut":
-                    item.find("start").text = str(s - cut_len)
-                    item.find("end").text   = str(e - cut_len)
-
-            # --- entirely inside cut → remove / disable ---
-            elif s >= cut_start and e <= cut_end:
-                if mode == "cut":
-                    to_remove.append(item)
-                else:
-                    item.find("enabled").text = "FALSE"
-
-            # --- cut completely inside clip → split ---
-            elif s < cut_start and e > cut_end:
-                left_out  = ci + (cut_start - s)
-                right_in  = ci + (cut_end   - s)
-
-                if mode == "cut":
-                    # Left stays, right shifts left by cut_len
-                    _set_clip_endpoints(item, s, cut_start, ci, left_out)
-                    right = _clone(item, id_counter); id_counter += 1
-                    _set_clip_endpoints(right, cut_start, e - cut_len, right_in, co)
-                    to_add.append(right)
-                else:  # mute
-                    _set_clip_endpoints(item, s, cut_start, ci, left_out)
-                    mid = _clone(item, id_counter); id_counter += 1
-                    _set_clip_endpoints(mid, cut_start, cut_end, left_out, right_in)
-                    mid.find("enabled").text = "FALSE"
-                    to_add.append(mid)
-                    right = _clone(item, id_counter); id_counter += 1
-                    _set_clip_endpoints(right, cut_end, e, right_in, co)
-                    to_add.append(right)
-
-            # --- cut overlaps clip end (s < cut_start < e <= cut_end) ---
-            elif s < cut_start and e <= cut_end:
-                new_out = ci + (cut_start - s)
-                if mode == "cut":
-                    _set_clip_endpoints(item, s, cut_start, ci, new_out)
-                else:
-                    _set_clip_endpoints(item, s, cut_start, ci, new_out)
-                    disabled = _clone(item, id_counter); id_counter += 1
-                    _set_clip_endpoints(disabled, cut_start, e, new_out, co)
-                    disabled.find("enabled").text = "FALSE"
-                    to_add.append(disabled)
-
-            # --- cut overlaps clip start (cut_start <= s < cut_end < e) ---
-            else:  # s >= cut_start (but s < cut_end) and e > cut_end
-                new_in = ci + (cut_end - s)
-                if mode == "cut":
-                    _set_clip_endpoints(item, cut_start, e - cut_len, new_in, co)
-                else:
-                    disabled = _clone(item, id_counter); id_counter += 1
-                    _set_clip_endpoints(disabled, s, cut_end, ci, new_in)
-                    disabled.find("enabled").text = "FALSE"
-                    to_add.append(disabled)
-                    _set_clip_endpoints(item, cut_end, e, new_in, co)
-
-        for item in to_remove:
-            track.remove(item)
-        for item in to_add:
-            track.append(item)
-
-        # Re-sort clipitems by start time
-        items_sorted = sorted(track.findall("clipitem"),
-                               key=lambda x: int(x.find("start").text))
-        for item in track.findall("clipitem"):
-            track.remove(item)
-        for item in items_sorted:
-            track.append(item)
-
-    return id_counter
-
-
-def apply_cuts(seq: ET.Element, cuts: list, mode: str):
-    """Apply all silence cuts to the sequence (processed last-to-first in cut mode)."""
-    vid = seq.find("media/video")
-    aud = seq.find("media/audio")
-    all_tracks = list(vid.findall("track")) + list(aud.findall("track"))
-    id_counter = _next_id(seq)
-
-    ordered = sorted(cuts, reverse=(mode == "cut"))  # reverse for cut mode
-    for (cut_start, cut_end) in ordered:
-        id_counter = _apply_one_cut(all_tracks, cut_start, cut_end,
-                                     mode, id_counter)
-
-    # Update sequence duration
-    if mode == "cut":
-        max_end = 0
-        for track in vid.findall("track"):
-            for item in track.findall("clipitem"):
-                end = int(item.find("end").text)
-                max_end = max(max_end, end)
-        seq.find("duration").text = str(max_end)
-        work_ticks = max_end * TICKS_PER_FRAME
-        if seq.get("MZ.WorkOutPoint"):
-            seq.set("MZ.WorkOutPoint", str(work_ticks))
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +312,10 @@ def main():
 
     print(f"\n[4/4] Applying {len(cuts)} cuts (mode={args.mode})...")
     rep.note(f"applying {len(cuts)} cuts")
-    apply_cuts(seq, cuts, mode=args.mode)
+    if args.mode == "cut":
+        ripple_cut(seq, cuts)
+    else:
+        mute_spans(seq, all_tracks(seq), cuts)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")

@@ -45,6 +45,7 @@ import xml.etree.ElementTree as ET
 # Reuse the P2 spanned-chain resolver from Stage 3 + the on-demand model fetch.
 sys.path.insert(0, str(Path(__file__).parent))
 from remove_silence import _resolve_p2_chain   # noqa: E402
+from ffbin import ffmpeg                        # noqa: E402
 from progress import ProgressReporter           # noqa: E402
 from fetch_models import mobilenet_ssd_paths    # noqa: E402
 
@@ -145,7 +146,7 @@ def iter_main_frames(clips: list, fps: float, scale: int,
                 print(f"  [WARN] missing MXF: {sub_mxf}")
                 cursor += sub_dur
                 continue
-            cmd = ["ffmpeg", "-loglevel", "error",
+            cmd = [ffmpeg(), "-loglevel", "error",
                    "-ss", str(local_in / FPS), "-i", str(sub_mxf),
                    "-t", str(sub_dur / FPS),
                    "-vf", f"fps={fps},scale={scale}:{h}",

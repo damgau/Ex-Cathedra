@@ -40,10 +40,12 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # ffmpeg must be installed on the system
-# Windows: winget install ffmpeg   |   macOS: brew install ffmpeg
+# Windows: winget install Gyan.FFmpeg   |   macOS: brew install ffmpeg
 ```
 
-No `.env` is required for the current stages — all processing is local.
+ffmpeg does **not** need to be on PATH: the tools auto-detect a winget install
+(`Gyan.FFmpeg`). If yours lives elsewhere, set `FFMPEG_BIN` (and `FFPROBE_BIN`) in
+`.env` to the full binary path. Otherwise no `.env` is required — all processing is local.
 
 ## Project layout
 

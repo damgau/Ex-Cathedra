@@ -34,9 +34,9 @@ if getattr(sys.stdout, "encoding", "").lower() not in ("utf-8", "utf8"):
 
 import xml.etree.ElementTree as ET
 
-# Reuse the single-track split+disable + id allocation from remove_silence.
+# The single-track split+disable that reveals DIV under MAIN (ADR-0001).
 sys.path.insert(0, str(Path(__file__).parent))
-from remove_silence import _apply_one_cut, _next_id   # noqa: E402
+from timeline import disable_span   # noqa: E402
 
 BASE_DIR   = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "OUTPUT"
@@ -299,9 +299,8 @@ def main():
             sys.exit("[ABORT] Cancelled by user.")
 
     print("\n[4/4] Disabling MAIN video across DIV windows...")
-    id_counter = _next_id(seq)
     for (s, e) in windows:
-        id_counter = _apply_one_cut([main_track], s, e, mode="mute", id_counter=id_counter)
+        disable_span(seq, main_track, (s, e))
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")

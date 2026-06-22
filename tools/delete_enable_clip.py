@@ -32,9 +32,9 @@ if getattr(sys.stdout, "encoding", "").lower() not in ("utf-8", "utf8"):
     except (AttributeError, ValueError):
         pass
 
-# Reuse the ripple-cut logic from remove_silence.
+# Reuse the ripple-cut engine from the shared timeline module.
 sys.path.insert(0, str(Path(__file__).parent))
-from remove_silence import apply_cuts   # noqa: E402
+from timeline import ripple_cut   # noqa: E402
 
 BASE_DIR   = Path(__file__).parent.parent
 OUTPUT_DIR = BASE_DIR / "OUTPUT"
@@ -158,7 +158,7 @@ def main():
         return
 
     print("[3/3] Ripple-deleting dead-air spans across all tracks...")
-    apply_cuts(seq, spans, mode="cut")
+    ripple_cut(seq, spans)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")

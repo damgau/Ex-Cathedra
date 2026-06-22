@@ -271,11 +271,23 @@ Note: `opencv-python` 4.13 confirmed importing on the project's Python 3.14.
 
 ---
 
-## Shared utilities (inline, not a separate module)
+## Shared utilities
+
+**Extracted to a module:**
+- Cut / mute engine — `tools/timeline.py` (`ripple_cut`, `mute_spans`, `disable_span`,
+  `all_tracks`). The xmeml clipitem split/clone/shift/disable logic. Was inline in
+  `remove_silence` and imported privately by `switch_angles` / `delete_enable_clip`;
+  promoted to one named seam (2026-06-22). `disable_span` keeps ADR-0001 legible.
+
+**Still inline (candidates to consolidate into `timeline.py` later — see `maybe_later/NOTES.md`):**
 - P2 XML chain parser — reads `<Next>` / `<Top>` links from CLIP/*.XML
-- FCP XML builder — thin wrapper around `lxml` for creating/mutating xmeml elements
-- Frame ↔ seconds conversion at 25fps NDF
-- Audio extractor — thin ffmpeg-python wrapper for channel extraction
+  (re-walked 3 ways: `remove_silence._resolve_p2_chain`, `sync_audios._walk_p2_audio_chain`,
+  `create_xml.build_chain`)
+- Camera-track + `pathurl` reader — "find the camera's track by %20-encoded label, read
+  clipitem endpoints", duplicated across 4 tools with a divergent pathurl decoder
+- Frame ↔ seconds ↔ ticks conversion at 25fps NDF — `FPS` / `TICKS_PER_FRAME` redefined
+  across ~6 files
+- Audio / frame extractor — thin ffmpeg wrappers for channel + frame extraction
 
 ---
 

@@ -23,8 +23,9 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).parent))
 from switch_angles import (
     FPS, detect_div_runs, shape_windows, _find_video_track,
-    _edit_points, _timeline_end, _apply_one_cut, _next_id,
+    _edit_points, _timeline_end,
 )
+from timeline import disable_span
 
 TICKS = 10_160_640_000
 TL_END = 7500          # 300 s @ 25 fps
@@ -136,9 +137,8 @@ def main():
     aud_tr = seq.find("media/audio/track")
     aud_before = _coverage(aud_tr, True)
 
-    id_counter = _next_id(seq)
     for (s, e) in windows:
-        id_counter = _apply_one_cut([main_tr], s, e, mode="mute", id_counter=id_counter)
+        disable_span(seq, main_tr, (s, e))
 
     disabled = _coverage(main_tr, False)
     check(f"MAIN disabled coverage == [{windows[0]}] (got {disabled})",
