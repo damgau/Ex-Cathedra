@@ -27,11 +27,7 @@ OUTPUT/03_silence.xml
         ↓ detect_framing.py    (CV: is the speaker's face visible on MAIN?)
 OUTPUT/main_framing.json
         ↓ switch_angles.py     (hard-cut to DIV where no face; pre-roll + snap-to-pause; only MAIN video disabled)
-OUTPUT/04_angles.xml
-        ↓ [import to Premiere → review, disable bad takes → export]
-OUTPUT/06_reviewed.xml
-        ↓ delete_enable_clip.py   (ripple-delete spans dead on all tracks; camera switches preserved)
-OUTPUT/07_final.xml   ← final import into Premiere
+OUTPUT/04_angles.xml   ← final import into Premiere (review, disable bad takes)
 ```
 
 ---
@@ -180,30 +176,6 @@ opt-in. This avoids over-cutting (the first run bulk-removed connectives → 161
 
 ---
 
-## Stage 6 — `tools/delete_enable_clip.py`
-
-**What it does:** Commits an editor-reviewed timeline into the final cut by ripple-deleting
-every span that is dead on **all** tracks. Multicam-safe: a span where only one video track is
-disabled (camera switch) is preserved.
-
-**Algorithm:**
-1. Parse `OUTPUT/06_reviewed.xml` (the Premiere export after review)
-2. Build the union of all *enabled* clip coverage across every track
-3. `removable_spans` = complement of that union within `[0, timeline_end)` (gaps + all-disabled spans)
-4. `apply_cuts(mode="cut")` to ripple-delete those spans across all tracks
-5. Report spans removed (count + seconds), disabled clips deleted vs retained, old → new duration
-
-**Output:** `OUTPUT/07_final.xml`
-
-**CLI args:** `--input` (default `OUTPUT/06_reviewed.xml`), `--output` (default `OUTPUT/07_final.xml`)
-
-**Workflow:** `workflows/delete_enable_clip.md`
-
-**Caveat:** input is a Premiere export, not our generated XML — keys only off
-`start`/`end`/`in`/`out`/`enabled`; validate against a real export before trusting it.
-
----
-
 ## Stage 4 — `tools/detect_framing.py` (camera switching, part 1)
 
 **What it does:** Samples the MAIN video over the silence-trimmed timeline and runs OpenCV Haar face
@@ -231,8 +203,8 @@ the switch thresholds can be re-tuned without re-running the slow CV pass.
 
 **What it does:** Turns the framing signal into a multicam timeline: stays on MAIN, hard-cuts to DIV
 where no face is detected, cutting ~1 s early and snapping to pauses. **Only ever disables MAIN video** —
-never DIV, never audio, never all tracks — so `delete_enable_clip.py` still reads each switch as
-"preserve" (one video track disabled = camera switch). Reveals DIV by splitting + disabling the MAIN clip
+never DIV, never audio, never all tracks — so each switch stays covered by an enabled clip
+(one video track disabled = camera switch). Reveals DIV by splitting + disabling the MAIN clip
 via `remove_silence._apply_one_cut([main_video_track], s, e, mode="mute", id_counter)`.
 
 **Decision logic (order matters):** face signal → **trigger** filter (no-face ≥ `--trigger` s qualifies a
@@ -276,7 +248,7 @@ Note: `opencv-python` 4.13 confirmed importing on the project's Python 3.14.
 **Extracted to a module:**
 - Cut / mute engine — `tools/timeline.py` (`ripple_cut`, `mute_spans`, `disable_span`,
   `all_tracks`). The xmeml clipitem split/clone/shift/disable logic. Was inline in
-  `remove_silence` and imported privately by `switch_angles` / `delete_enable_clip`;
+  `remove_silence` and imported privately by `switch_angles`;
   promoted to one named seam (2026-06-22). `disable_span` keeps ADR-0001 legible.
 
 **Still inline (candidates to consolidate into `timeline.py` later — see `maybe_later/NOTES.md`):**
@@ -296,5 +268,4 @@ Note: `opencv-python` 4.13 confirmed importing on the project's Python 3.14.
 2. Run `sync_audios.py` → open `OUTPUT/02_sync.xml`, scrub timeline, confirm clap/transient aligns across cameras
 3. Run `remove_silence.py` → open `OUTPUT/03_silence.xml`, confirm dead air is gone, speech is unclipped
 4. Run `detect_framing.py` → check `OUTPUT/main_framing.json`: printed face-coverage % and longest no-face stretch match what you know of the footage
-5. Run `switch_angles.py` → open `OUTPUT/04_angles.xml` (same length as `03`), confirm it holds on MAIN and cuts to DIV ~1 s before the speaker leaves frame (on a pause), no shot < 1 s; review, disable bad takes, export `OUTPUT/06_reviewed.xml`
-6. Run `delete_enable_clip.py` → open `OUTPUT/07_final.xml`, confirm dead air is gone, camera switches are preserved, and the timeline plays clean
+5. Run `switch_angles.py` → open `OUTPUT/04_angles.xml` (same length as `03`), confirm it holds on MAIN and cuts to DIV ~1 s before the speaker leaves frame (on a pause), no shot < 1 s; review and disable bad takes in Premiere

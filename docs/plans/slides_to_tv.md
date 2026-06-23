@@ -102,7 +102,7 @@ already-installed LibreOffice, documented in the workflow).
 ## Future stage (documented only, not built)
 
 `tools/place_slides.py` (~Stage 7): consume a timecoded transcript + `manifest.json`, match each
-slide's `text` to where it's discussed, and emit slide clipitems on **V3** of `OUTPUT/06_reviewed.xml`
+slide's `text` to where it's discussed, and emit slide clipitems on **V3** of `OUTPUT/04_angles.xml`
 using the FCP7 `<clipitem>` / `<file>` helpers patterned on `tools/create_xml.py`.
 
 ## Verification (after build)

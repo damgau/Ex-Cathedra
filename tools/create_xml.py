@@ -333,7 +333,7 @@ def generate_xml(main_chain: list, div_chain: list, output_path: Path):
         f"    <uuid>{seq_uuid}</uuid>\n"
         f"    <duration>{seq_duration}</duration>\n"
         f"    {_rate()}\n"
-        f"    <name>sync</name>\n"
+        f"    <name>create_xml</name>\n"
         f"    <media>\n"
         f"      <video>\n"
         f"        <format><samplecharacteristics>"

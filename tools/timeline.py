@@ -23,7 +23,7 @@ applies them right-to-left so earlier coordinates stay valid; mute is
 order-independent.
 
 Extracted from remove_silence.py (Stage 3), which had become the de-facto host
-that switch_angles and delete_enable_clip imported its private cut helpers from.
+that switch_angles imported its private cut helpers from.
 """
 
 import copy

@@ -11,7 +11,7 @@ MAIN (that's the whole point of switching from face- to person-detection).
 Mechanic: MAIN (V2) is the top video track, so to reveal DIV (V1) for a window
 [s, e] we split + DISABLE MAIN's clip across it (DIV underneath shows through).
 We ONLY ever disable the MAIN video track — never DIV, never audio, never all
-tracks — so delete_enable_clip.py still reads each switch as "preserve".
+tracks — so every switch stays covered by an enabled clip (multicam-safe on re-import).
 
 Output: OUTPUT/04_angles.xml  (same <duration> as the input — disable-only, no ripple)
 """
@@ -214,8 +214,6 @@ def main():
                         help="Snap each cut to a pause within this distance (default 0.75)")
     parser.add_argument("--min-shot", type=float, default=1.0, metavar="s",
                         help="No MAIN or DIV shot shorter than this (default 1.0)")
-    parser.add_argument("-y", "--yes", action="store_true",
-                        help="Skip the final confirmation.")
     args = parser.parse_args()
 
     input_path    = Path(args.input)
@@ -293,11 +291,6 @@ def main():
         print(f"[OK] Written: {output_path}")
         return
 
-    if not args.yes:
-        answer = input(f"\n  Apply {len(windows)} DIV switch(es)? [Y/n]: ").strip().lower()
-        if answer in ("n", "no"):
-            sys.exit("[ABORT] Cancelled by user.")
-
     print("\n[4/4] Disabling MAIN video across DIV windows...")
     for (s, e) in windows:
         disable_span(seq, main_track, (s, e))
@@ -308,7 +301,7 @@ def main():
     print(f"[OK] Written: {output_path}")
     print(f"     Timeline length unchanged: {new_end} frames "
           f"(was {timeline_end}). Only MAIN video disabled; DIV + audio untouched.")
-    print("     Review in Premiere; switches are preserved by delete_enable_clip.py.")
+    print("     Review in Premiere; disable-only edits survive a re-export.")
 
 
 if __name__ == "__main__":

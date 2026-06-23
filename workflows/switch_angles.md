@@ -55,8 +55,8 @@ the MAIN *video* track is ever disabled — never DIV, never audio — so the sw
 4. Import `OUTPUT/04_angles.xml` into a fresh Premiere project. Scrub and confirm it holds on
    MAIN, cuts to DIV ~1 s before the speaker leaves frame (on a pause, not mid-syllable), returns
    cleanly, no shot < 1 s, audio continuous.
-5. Review/correct in Premiere (re-enable a wrong DIV cut, add one the detector missed), export
-   `06_reviewed.xml`, and proceed to `workflows/delete_enable_clip.md`.
+5. Review/correct in Premiere (re-enable a wrong DIV cut, add one the detector missed). That
+   reviewed timeline is the final deliverable.
 
 ### Tuning (Stage 4 detection)
 

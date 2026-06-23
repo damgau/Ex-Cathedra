@@ -271,6 +271,7 @@ def main():
 
     tree = ET.parse(input_path)
     seq  = tree.getroot().find("sequence")
+    seq.find("name").text = "remove_silence"   # name sequence after the producing stage
 
     print("[2/4] Extracting clean audio for silence analysis...")
     clips = _get_cam_clips(seq, cam)
@@ -303,9 +304,9 @@ def main():
         print(f"        ... and {len(cuts) - 10} more")
 
     if not cuts:
-        print("  No silence detected — copying input to output unchanged.")
-        import shutil
-        shutil.copy(input_path, output_path)
+        print("  No silence detected — writing input through unchanged.")
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")
         rep.done("no silence detected")
         print(f"[OK] Written: {output_path}")
         return
