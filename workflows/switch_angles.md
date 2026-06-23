@@ -40,7 +40,7 @@ the MAIN *video* track is ever disabled — never DIV, never audio — so the sw
   `remove_silence._resolve_p2_chain`; handles both FCP-XML file-reference styles (pathurl-per-clip
   and Premiere's `<file id>` dedup).
 - `tools/switch_angles.py` — debounces the absence signal into DIV windows (pre-roll + snap + min
-  shot) and applies the split-and-disable. Reuses `remove_silence._apply_one_cut` and `_next_id`.
+  shot) and applies the split-and-disable. Reuses `timeline.disable_span` (the camera-switch seam).
 - `tools/fetch_models.py` — on-demand download of the (gitignored) MobileNet-SSD weights.
 - `tools/test_switch_angles.py` — invariant regression test (no video needed).
 

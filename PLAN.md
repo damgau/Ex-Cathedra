@@ -24,9 +24,9 @@ OUTPUT/01_create.xml
 OUTPUT/02_sync.xml
         ↓ remove_silence.py
 OUTPUT/03_silence.xml
-        ↓ detect_framing.py    (CV: is the speaker's face visible on MAIN?)
-OUTPUT/main_framing.json
-        ↓ switch_angles.py     (hard-cut to DIV where no face; pre-roll + snap-to-pause; only MAIN video disabled)
+        ↓ detect_framing.py    (CV: is the speaker present in MAIN's frame?)
+OUTPUT/main_presence.json
+        ↓ switch_angles.py     (hard-cut to DIV where speaker is absent; pre-roll + snap-to-pause; only MAIN video disabled)
 OUTPUT/04_angles.xml   ← final import into Premiere (review, disable bad takes)
 ```
 
@@ -178,45 +178,47 @@ opt-in. This avoids over-cutting (the first run bulk-removed connectives → 161
 
 ## Stage 4 — `tools/detect_framing.py` (camera switching, part 1)
 
-**What it does:** Samples the MAIN video over the silence-trimmed timeline and runs OpenCV Haar face
-detection to answer, per sampled instant, "is the speaker's face visible on MAIN?". Caches the signal so
-the switch thresholds can be re-tuned without re-running the slow CV pass.
+**What it does:** Samples the MAIN video over the silence-trimmed timeline and runs **MobileNet-SSD
+person detection** (`cv2.dnn`) to answer, per sampled instant, "is the speaker present in MAIN's
+frame?". Caches the signal so the switch thresholds can be re-tuned without re-running the slow CV pass.
 
 **Algorithm:**
-1. Parse `OUTPUT/03_silence.xml`; find the MAIN **video** track by `file/pathurl` containing `MAIN%20CAM`.
+1. Parse `OUTPUT/03_silence.xml`; find the MAIN **video** track by `file/pathurl` containing `MAIN%20CAM`
+   (handles both pathurl-per-clip and Premiere's `<file id>` dedup).
 2. Per MAIN clipitem, map timeline `[start,end]` → source `[in,out]` and resolve the P2 spanned chain
    (`remove_silence._resolve_p2_chain`) → physical `VIDEO/*.MXF` slices (H.264 at stream 0, decodable).
-3. Extract frames at `--fps` (default 4), downscaled to `--scale` width (default 640), via an
-   `ffmpeg … -f image2pipe -vcodec mjpeg pipe:1`, decoded with `cv2.imdecode`.
-4. Detect the speaker with **frontal + profile Haar cascades** (profile on the frame and its mirror, from
-   `cv2.data.haarcascades`); `face_present = any cascade fires` above a `--min-face` size floor. Profile
-   detection is what keeps a head-turn counting as "face visible" under the conservative rule.
+3. Decode frames at `--fps` (default 4), downscaled to `--scale` width (default 480), via **raw video
+   piped straight from ffmpeg into numpy** (no JPEG/temp-dir round-trip, ≈2.6× faster).
+4. Detect the speaker with **MobileNet-SSD** (PASCAL VOC person class 15); `speaker_present = any person
+   box scores above `--conf`` (default 0.5). The DNN re-blobs to 300×300 internally, so it stays robust
+   to the speaker gesturing, turning to slides, or showing a profile — all still "present".
 
-**Output:** `OUTPUT/main_framing.json` — `{fps, params, samples:[{timeline_frame, face_present}, …]}`.
+**Output:** `OUTPUT/main_presence.json` — `{detector:"mobilenet-ssd", fps, scale, conf, timeline_fps,
+samples:[{timeline_frame, speaker_present}, …]}`. Weights are fetched on demand by `tools/fetch_models.py`.
 
-**CLI:** `--input`, `--output`, `--fps` (4), `--scale` (640), `--min-face`, `--neighbors`/`--min-size`,
+**CLI:** `--input`, `--output`, `--fps` (4), `--scale` (480), `--conf` (0.5),
 `--start`/`--end`/`--max-frames`.
 
 ---
 
 ## Stage 5 — `tools/switch_angles.py` (camera switching, part 2)
 
-**What it does:** Turns the framing signal into a multicam timeline: stays on MAIN, hard-cuts to DIV
-where no face is detected, cutting ~1 s early and snapping to pauses. **Only ever disables MAIN video** —
-never DIV, never audio, never all tracks — so each switch stays covered by an enabled clip
+**What it does:** Turns the presence signal into a multicam timeline: stays on MAIN, hard-cuts to DIV
+where the speaker is out of MAIN's frame, cutting ~1 s early and snapping to pauses. **Only ever disables
+MAIN video** — never DIV, never audio, never all tracks — so each switch stays covered by an enabled clip
 (one video track disabled = camera switch). Reveals DIV by splitting + disabling the MAIN clip
-via `remove_silence._apply_one_cut([main_video_track], s, e, mode="mute", id_counter)`.
+via `timeline.disable_span(seq, main_video_track, (s, e))` (ADR-0001).
 
-**Decision logic (order matters):** face signal → **trigger** filter (no-face ≥ `--trigger` s qualifies a
-run; face ≥ `--return` s ends it) → **pre/post-roll** (`--pre-roll` 1.0, `--post-roll` 0.75) → **snap**
+**Decision logic (order matters):** presence signal → **trigger** filter (absence ≥ `--trigger` s qualifies
+a run; presence ≥ `--return` s ends it) → **pre/post-roll** (`--pre-roll` 1.0, `--post-roll` 0.75) → **snap**
 each boundary to the nearest MAIN edit point (silence cut) within `--snap-tolerance` (0.75) → **merge**
 overlaps → enforce **`--min-shot`** 1.0 s (merge windows separated by a sub-1 s MAIN gap) → split-and-
 disable MAIN per window.
 
 **Output:** `OUTPUT/04_angles.xml` (same `<duration>` as `03_silence.xml` — disable-only, no ripple).
 
-**CLI:** `--input`, `--framing`, `--output`, `--trigger`, `--return`, `--pre-roll`, `--post-roll`,
-`--snap-tolerance`, `--min-shot`, `-y/--yes`.
+**CLI:** `--input`, `--presence`, `--output`, `--trigger`, `--return`, `--pre-roll`, `--post-roll`,
+`--snap-tolerance`, `--min-shot`.
 
 **Workflow:** `workflows/switch_angles.md`. **Test:** `tools/test_switch_angles.py`.
 
@@ -236,7 +238,7 @@ scipy
 numpy
 lxml
 ffmpeg-python
-opencv-python    # Stage 4 detect_framing — Haar cascades ship in cv2.data.haarcascades
+opencv-python    # Stage 4 detect_framing — MobileNet-SSD person detection via cv2.dnn
 ```
 Note: `ffmpeg` binary must be installed on the system (`brew install ffmpeg`).
 Note: `opencv-python` 4.13 confirmed importing on the project's Python 3.14.
@@ -267,5 +269,5 @@ Note: `opencv-python` 4.13 confirmed importing on the project's Python 3.14.
 1. Run `create_xml.py` → open `OUTPUT/01_create.xml` in Premiere, confirm both cameras appear on V1/V2 with correct clip count and durations
 2. Run `sync_audios.py` → open `OUTPUT/02_sync.xml`, scrub timeline, confirm clap/transient aligns across cameras
 3. Run `remove_silence.py` → open `OUTPUT/03_silence.xml`, confirm dead air is gone, speech is unclipped
-4. Run `detect_framing.py` → check `OUTPUT/main_framing.json`: printed face-coverage % and longest no-face stretch match what you know of the footage
+4. Run `detect_framing.py` → check `OUTPUT/main_presence.json`: printed speaker-present % and longest absent stretch match what you know of the footage
 5. Run `switch_angles.py` → open `OUTPUT/04_angles.xml` (same length as `03`), confirm it holds on MAIN and cuts to DIV ~1 s before the speaker leaves frame (on a pause), no shot < 1 s; review and disable bad takes in Premiere

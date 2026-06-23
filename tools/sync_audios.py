@@ -410,7 +410,9 @@ def main():
     print("\n[5/5] Applying sync offset to XML...")
     tree = ET.parse(input_path)
     seq  = tree.getroot().find("sequence")
-    seq.find("name").text = "sync_audios"   # name sequence after the producing stage
+    name_el = seq.find("name")              # name sequence after the producing stage
+    if name_el is not None:
+        name_el.text = "sync_audios"
     shift_camera_clips(seq, cam_to_shift, offset)
 
     tree.write(str(output_path), xml_declaration=True, encoding="UTF-8")

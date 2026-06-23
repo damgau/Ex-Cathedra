@@ -146,7 +146,7 @@ def iter_main_frames(clips: list, fps: float, scale: int,
                 print(f"  [WARN] missing MXF: {sub_mxf}")
                 cursor += sub_dur
                 continue
-            cmd = [ffmpeg(), "-loglevel", "error",
+            cmd = [ffmpeg(), "-nostdin", "-loglevel", "error",
                    "-ss", str(local_in / FPS), "-i", str(sub_mxf),
                    "-t", str(sub_dur / FPS),
                    "-vf", f"fps={fps},scale={scale}:{h}",

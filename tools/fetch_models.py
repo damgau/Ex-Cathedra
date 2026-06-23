@@ -10,7 +10,9 @@ so a fresh checkout downloads automatically on first run.
 Run standalone:  python tools/fetch_models.py
 """
 
+import os
 import sys
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -31,16 +33,26 @@ MOBILENET_SSD = {
 
 def _download(urls: list, dest: Path) -> None:
     last = None
+    # Download to a sibling .part and only atomically rename it into place once
+    # the body has been fully read. A mid-stream drop raises inside the `with`
+    # (caught below) and never leaves a truncated file at `dest` that the size
+    # check in ensure_model would mistake for a good cached model.
+    tmp = dest.with_name(dest.name + ".part")
     for url in urls:
         try:
             print(f"  fetching {dest.name} <- {url}")
-            with urllib.request.urlopen(url, timeout=60) as r, open(dest, "wb") as f:
-                f.write(r.read())
-            if dest.stat().st_size > 0:
+            with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f)
+            if tmp.stat().st_size > 0:
+                os.replace(tmp, dest)
                 return
         except Exception as e:        # noqa: BLE001 - try the next mirror
             last = e
             print(f"    failed: {e}")
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
     raise RuntimeError(f"Could not download {dest.name}: {last}")
 
 

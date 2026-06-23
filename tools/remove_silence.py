@@ -160,7 +160,7 @@ def extract_timeline_audio(cam_clips: list, channel: int, reporter=None) -> tupl
             start_secs = sub_in  / FPS
             dur_secs   = sub_dur / FPS
             cmd = [
-                ffmpeg(), "-loglevel", "error",
+                ffmpeg(), "-nostdin", "-loglevel", "error",
                 "-ss", str(start_secs), "-i", str(audio_mxf),
                 "-t", str(dur_secs),
                 "-map", "0:a:0",
@@ -271,7 +271,9 @@ def main():
 
     tree = ET.parse(input_path)
     seq  = tree.getroot().find("sequence")
-    seq.find("name").text = "remove_silence"   # name sequence after the producing stage
+    name_el = seq.find("name")                 # name sequence after the producing stage
+    if name_el is not None:
+        name_el.text = "remove_silence"
 
     print("[2/4] Extracting clean audio for silence analysis...")
     clips = _get_cam_clips(seq, cam)

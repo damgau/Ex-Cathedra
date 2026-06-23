@@ -32,8 +32,9 @@ if getattr(sys.stdout, "encoding", "").lower() not in ("utf-8", "utf8"):
     except (AttributeError, ValueError):
         pass
 
-# Reuse the ripple-cut engine from the shared timeline module.
-sys.path.insert(0, str(Path(__file__).parent))
+# Reuse the ripple-cut engine from the shared timeline module. This tool is
+# parked under maybe_later/tools/, so reach back to the real tools/ for it.
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools"))
 from timeline import ripple_cut   # noqa: E402
 
 BASE_DIR   = Path(__file__).parent.parent
