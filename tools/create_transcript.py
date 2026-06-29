@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stage 4 — create_transcript.py
+create_transcript.py — Whisper transcript pre-step (feeds place_slides)
 Extracts clean audio from the silence-trimmed sequence and runs local
 Whisper large-v3 to produce a word-level transcript with timeline-frame
 timestamps.

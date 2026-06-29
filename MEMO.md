@@ -1,5 +1,9 @@
 # Video Editing Workflow Automation
 
+> **Historical kickoff brief (2026-06, frozen).** The stage list below is the original plan —
+> including the retired Haar/face camera design and the now-current numbering. For the actual
+> pipeline see `PLAN.md` and `README.md`; this file is kept only as a record of initial intent.
+
 ## Context
 I want to build a program that automates my video editing workflow in
 Premiere Pro. We work step by step, validating each stage before moving

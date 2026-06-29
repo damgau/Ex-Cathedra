@@ -6,7 +6,7 @@ Why this exists: stages like detect_framing / remove_silence run for minutes and
 previously logged progress only to stdout. When such a stage is launched detached
 (no attached terminal), that stream is invisible and the run becomes a black box
 until the final output file appears. A ProgressReporter writes a small JSON
-sidecar next to the stage's main output (e.g. OUTPUT/main_framing.progress.json)
+sidecar next to the stage's main output (e.g. OUTPUT/main_presence.progress.json)
 that any watcher can poll — see watch_progress.py.
 
 Design:
@@ -40,7 +40,7 @@ from pathlib import Path
 
 def progress_path_for(output_path) -> Path:
     """Sidecar path for a stage's main output: replace the whole extension with
-    '.progress.json'.  OUTPUT/main_framing.json -> OUTPUT/main_framing.progress.json
+    '.progress.json'.  OUTPUT/main_presence.json -> OUTPUT/main_presence.progress.json
     ;  OUTPUT/03_silence.xml -> OUTPUT/03_silence.progress.json."""
     p = Path(output_path)
     return p.with_name(p.stem + ".progress.json")

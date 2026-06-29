@@ -3,10 +3,10 @@
 Convert a speaker's support deck — a **PDF**, a **PPTX**, or a **folder of exported JPEGs** — into a
 consistent set of broadcast-ready **1920×1080 square-pixel PNGs**, reframed to 16:9 by **padding,
 never stretching**. Also writes a `manifest.json` recording each still's source mapping, bar colour,
-and extracted text — the seed for a future transcript→slide placement stage on V3.
+and extracted text — the seed for the `place_slides` stage that puts slides on V3.
 
-> This builds the **converter only**. Putting the stills onto V3 at the right timecode is a separate,
-> future stage (`tools/place_slides.py`, see *Future stage* below) — not part of this workflow.
+> This builds the **converter only**. Putting the stills onto V3 at the right timecode is a separate
+> stage (`tools/place_slides.py`, now built — see `workflows/place_slides.md`) — not part of this workflow.
 
 ---
 
@@ -110,8 +110,9 @@ still as **square pixels**, not conform it to the sequence PAR:
   Ratio → "Square Pixels (1.0)"** (it usually auto-detects 1.0 from the 1920×1080 PNG; verify).
 - Drop on **V3**; the 16:9 frame fills the 16:9 raster with **no horizontal stretch**. Set Motion →
   Scale to "Scale to Frame Size" / fit if the project default doesn't already.
-- ☐ *To confirm on the next real import and lock here:* the exact menu path + scale setting that
-  yields no stretch and no unexpected re-scale. (Verification step 6.)
+- ☑ *Resolved by `place_slides`:* its V3 stills are pre-squeezed to 1440×1080 anamorphic and carry
+  PAR 1.333 in the PNG `pHYs` chunk, so they fill the frame at 100% width with no Scale-to-Frame (manual
+  "HD Anamorphic 1080 (1.333)" fallback if a Premiere version ignores `pHYs`). See `workflows/place_slides.md`.
 
 ## Edge Cases & Known Issues
 
@@ -155,12 +156,13 @@ still as **square pixels**, not conform it to the sequence PAR:
 - **Python env / UTF-8.** Use system Python 3.14 (project `.venv` is broken, macOS origin). stdout is
   reconfigured to UTF-8 so accented deck names ("pèlerinage") don't crash on Windows cp1252.
 
-## Future stage (documented only — not built)
+## Slides-onto-V3 stage (built — see `workflows/place_slides.md`)
 
-`tools/place_slides.py` (~Stage 7): consume a timecoded transcript + this `manifest.json`, match each
-slide's `text` to where it's discussed, and emit slide clipitems on **V3** of `OUTPUT/04_angles.xml`
-using the FCP7 `<clipitem>`/`<file>` helpers patterned on `tools/create_xml.py`. Image-folder decks
-have no `text` (empty) and would need OCR first.
+`tools/place_slides.py` lays the converted stills onto **V3** of `OUTPUT/04_angles.xml` →
+`OUTPUT/05_slides.xml`. The approach changed from the original transcript-text-matching idea: this deck
+is image-only (no `text` layer), so identity is **ORB** feature matching against the locked DIV camera
+and timing is **frame-differencing** on the projected screen — the transcript only sets cutaway
+duration / start-snap. See `workflows/place_slides.md`.
 
 ## Changelog
 

@@ -4,9 +4,12 @@ Tools that were built but set aside. Kept (not deleted) so the work and its less
 
 ---
 
-## `create_transcript` (old Stage 4) + `remove_fillers` (old Stage 5)
+## `remove_fillers` (old Stage 5) — parked  ·  `create_transcript` (old Stage 4) — revived
 
-**Parked: 2026-06-18.**
+**`remove_fillers` parked 2026-06-18.** **`create_transcript` revived 2026-06-29** as the live
+`tools/create_transcript.py` — it is now the Whisper pre-step that drives slide-cutaway timing in
+`place_slides` (see `workflows/place_slides.md`). The copy under `maybe_later/tools/create_transcript.py`
+is the superseded original. Only `remove_fillers` is still parked; the rest of this section is about it.
 
 ### Why parked
 
@@ -25,9 +28,10 @@ remove what isn't there. The whole transcript→filler path is therefore a dead 
 If we want to cut fillers, do it **from the audio waveform**, not the transcript — e.g. detect the
 characteristic `euh`/`mmm` segments acoustically (energy + pitch/formant signature, or a small audio
 classifier) and map those time ranges onto the timeline the same way `remove_silence` does. That makes
-`create_transcript` unnecessary for this purpose too, which is why both are parked together.
+`create_transcript` unnecessary *for filler removal* — though it has since been revived for a different
+purpose (slide-cutaway timing in `place_slides`).
 
-### Revival caveats (if you bring these back)
+### Revival caveats for `remove_fillers` (if you bring it back)
 
 - **`remove_fillers.py` import is doubly broken.** It does
   `sys.path.insert(0, str(Path(__file__).parent)); from remove_silence import apply_cuts, _next_id`.
@@ -35,12 +39,13 @@ classifier) and map those time ranges onto the timeline the same way `remove_sil
   moved out of `remove_silence` into `tools/timeline.py` — `apply_cuts` no longer exists. Repoint it at
   `tools/timeline.py` and switch to the new interface: `apply_cuts(seq, cuts, mode="mute")` →
   `mute_spans(seq, all_tracks(seq), cuts)`; ids are now allocated internally, so drop `_next_id`.
-- **`create_transcript.py` needs the `.venv_whisper` Python 3.11 venv** with `faster-whisper`
-  (faster-whisper had no 3.14 wheels). The main project Python is 3.14.
-- Both still assume the staged `OUTPUT/03_silence.xml` + `OUTPUT/audio_config.json` inputs and 25 fps.
+- It still assumes the staged `OUTPUT/03_silence.xml` + a word-level transcript, at 25 fps, and (like the
+  live `create_transcript`) the `.venv_whisper` Python 3.11 venv if its transcript is regenerated
+  (faster-whisper has no 3.14 wheels; the main project Python is 3.14).
 
-The detailed per-tool docs are preserved alongside the code: `maybe_later/workflows/create_transcript.md`
-and `maybe_later/workflows/remove_fillers.md`.
+The detailed per-tool docs are preserved alongside the code: `maybe_later/workflows/remove_fillers.md`
+(the original `maybe_later/workflows/create_transcript.md` is superseded by the live
+`tools/create_transcript.py` + `workflows/place_slides.md`).
 
 ---
 

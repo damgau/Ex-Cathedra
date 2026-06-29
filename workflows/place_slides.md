@@ -89,9 +89,9 @@ is readable across the whole talk, so we read the screen directly.
   not the XML). That displays at correct 16:9 / 100% width with no Scale-to-Frame — closing the square-pixel
   stretch open item from `slides_to_tv.md`. Background blur strength = `BG_BLUR_DOWN` (10; 16 was too strong,
   6 too light). Manual PAR fallback in Step 6 if a Premiere version ignores pHYs.
-- **create_transcript.py**: run with `.venv_whisper\Scripts\python.exe` (Windows; the docstring's `bin/python`
-  is macOS). It now lives in `tools/` so `BASE_DIR` resolves to the project root, and ffmpeg comes from
-  `ffbin.py` (need not be on PATH).
+- **create_transcript.py**: run with `.venv_whisper\Scripts\python.exe` (Windows; the docstring lists both
+  the Windows and the macOS `bin/python` invocations). It lives in `tools/` so `BASE_DIR` resolves to the
+  project root, and ffmpeg comes from `ffbin.py` (need not be on PATH).
 - No new Python dependencies — `place_slides.py` uses numpy + cv2 (already in system Python).
 
 ## Changelog

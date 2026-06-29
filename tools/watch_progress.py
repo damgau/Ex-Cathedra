@@ -7,8 +7,8 @@ Reads the JSON written by progress.ProgressReporter and prints a compact line:
   detect_framing  running   47%  9876/21000   14.3/s  elapsed 11:30  eta 12:42  | clip 3/4
 
 Usage:
-  python tools/watch_progress.py OUTPUT/main_framing.json   # main output -> .progress.json
-  python tools/watch_progress.py OUTPUT/main_framing.progress.json
+  python tools/watch_progress.py OUTPUT/main_presence.json   # main output -> .progress.json
+  python tools/watch_progress.py OUTPUT/main_presence.progress.json
   python tools/watch_progress.py --latest                   # newest OUTPUT/*.progress.json
   python tools/watch_progress.py --latest --loop            # live, until phase done/failed
   python tools/watch_progress.py --latest --loop --interval 5
