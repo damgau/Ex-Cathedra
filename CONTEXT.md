@@ -58,8 +58,8 @@ video track disabled = a switch (see ADR-0001), never dead air.
 _Avoid_: cutaway, multicam edit.
 
 **Ripple-delete** (dead-air removal):
-The final stage removes spans that are disabled on *every* track; camera switches
-survive because DIV still covers them.
+A (currently unbuilt) ripple-delete pass would remove spans that are disabled on *every*
+track; camera switches survive because DIV still covers them.
 _Avoid_: cleanup, compact.
 
 ## Pipeline

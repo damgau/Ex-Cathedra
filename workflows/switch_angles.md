@@ -20,7 +20,9 @@ multicam timeline.
 Produce `OUTPUT/04_angles.xml` — `OUTPUT/03_silence.xml` with the **MAIN video track split and
 disabled** across every span where the speaker is absent from MAIN, so the DIV angle shows
 through. **Timeline length is unchanged** (success = same `<duration>` as `03_silence.xml`). Only
-the MAIN *video* track is ever disabled — never DIV, never audio — so the switches survive Stage 6.
+the MAIN *video* track is ever disabled — never DIV, never audio — so the switches stay reversible in
+review and survive a Premiere re-export (and remain separable from any future dead-air
+removal pass).
 
 ## Required Inputs
 
@@ -51,7 +53,7 @@ the MAIN *video* track is ever disabled — never DIV, never audio — so the sw
    (`--end 120` or `--max-frames 200`), then the full run. Review the printed
    "speaker present X %" and "longest absent run". (Model auto-downloads on first run.)
 3. **Stage 5:** `python tools/switch_angles.py`. Review the printed DIV windows (timestamps +
-   each duration + total DIV %), then confirm. Writes `OUTPUT/04_angles.xml`.
+   each duration + total DIV %). Runs autonomously and writes `OUTPUT/04_angles.xml`.
 4. Import `OUTPUT/04_angles.xml` into a fresh Premiere project. Scrub and confirm it holds on
    MAIN, cuts to DIV ~1 s before the speaker leaves frame (on a pause, not mid-syllable), returns
    cleanly, no shot < 1 s, audio continuous.
@@ -68,7 +70,7 @@ Knobs: `--conf` (min person-detection confidence, default 0.5; lower → more "p
 
 `--trigger` / `--return` (debounce: how long absence/return must persist), `--pre-roll` /
 `--post-roll` (lead in/out), `--snap-tolerance` (how far a cut may move to land on a pause),
-`--min-shot` (shortest allowed MAIN or DIV shot). `-y` skips the confirmation. The defaults
+`--min-shot` (shortest allowed MAIN or DIV shot). The defaults
 (`trigger=return=1.0`, `pre-roll=1.0`, `post-roll=0.75`, `snap=0.75`, `min-shot=1.0`) were
 validated on a stress-test conference (see Edge Cases) and are MAIN-biased.
 
@@ -92,7 +94,7 @@ validated on a stress-test conference (see Edge Cases) and are MAIN-biased.
   he is in neither is when he leaves the stage entirely (rare → handled by the silence/removal
   stage, not here).
 - **Disable-only — only MAIN video.** Stage 5 never ripples/deletes and never touches DIV or
-  audio. This invariant keeps removal (Stage 6) and angle-switching separable: a span with one
+  audio. This invariant keeps a future dead-air removal pass (none currently planned) and angle-switching separable: a span with one
   video track disabled = camera switch (kept); a span dead on every track = removed. Don't break
   it. Pinned by `tools/test_switch_angles.py`.
 - **Person model is gitignored + auto-fetched.** `fetch_models.py` downloads MobileNet-SSD to

@@ -6,5 +6,5 @@ DIV, never audio, never all tracks. This keeps angle-switching (`switch_angles`)
 separable from any later dead-air **ripple-delete**: such a pass removes only spans
 disabled on *every* track, so a span with one video track muted is preserved because DIV
 still covers it. Any module that applies a **mute** — including the cut
-engine we are extracting from `remove_silence` — must preserve this: disabling a span
+engine extracted into `tools/timeline.py` — must preserve this: disabling a span
 across all tracks would silently turn a camera switch into dead air.

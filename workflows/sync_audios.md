@@ -22,8 +22,8 @@ Produce `OUTPUT/02_sync.xml` (an FCP XML with the later camera shifted into sync
 
 1. Confirm `OUTPUT/01_create.xml` exists and `ffmpeg`/`ffprobe` are on PATH.
 2. Run `python tools/sync_audios.py`.
-3. Review the per-channel metrics; accept the detected clean camera/channel at the prompt, or override with `m`/`d` + channel number (or pass `--force-camera` **and** `--force-channel` together).
-4. Review the reported lead/shift, then accept the sync prompt.
+3. Review the printed per-channel metrics and the auto-selected clean camera/channel. The tool applies it automatically (no prompt); to override, re-run with `--force-camera` **and** `--force-channel` together.
+4. Review the reported lead/shift — the later-starting camera is shifted into sync automatically.
 5. Verify the result: confirm `OUTPUT/02_sync.xml` shifted the *later*-starting camera's clipitems (`start`/`end`), and scrub in Premiere.
 
 ## Expected Outputs

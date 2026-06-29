@@ -9,11 +9,13 @@ Solo conference recording with 2 cameras (MAIN CAM = active/primary, DIV CAM = w
 Each conference = its own cloned project folder. Paths are hardcoded to `INPUT/MAIN CAM/`, `INPUT/DIV CAM/`, and `OUTPUT/`. Configurable `--main-cam` / `--div-cam` path args are a post-beta enhancement.
 
 ## Architecture
-Separate Python tools in `tools/`, one per stage. Each follows the WAT `_template.py` pattern (argparse, .env loading, output to `OUTPUT/`). Stages are run manually in sequence. Camera-angle switching (Stage 4–5 below) only *disables MAIN video* so the DIV angle shows; the editor reviews in Premiere and exports a reviewed XML, then Stage 6 commits it into the final cut.
+Separate Python tools in `tools/`, one per stage. Each follows the WAT `_template.py` pattern (argparse, .env loading, output to `OUTPUT/`). Stages are run manually in sequence. Camera-angle switching (Stage 4–5 below) only *disables MAIN video* so the DIV angle shows; the editor reviews in Premiere and exports the reviewed XML as the final cut.
 
-**Set aside (see `maybe_later/`):** `create_transcript` (old Stage 4) and `remove_fillers` (old Stage 5)
-are parked — Whisper strips disfluencies during transcription, so a transcript-driven filler remover has
-nothing to act on. A future *audio-based* filler remover would replace them. Detail: `maybe_later/NOTES.md`.
+**Set aside (see `maybe_later/`):** `remove_fillers` (old Stage 5) is parked — Whisper strips
+disfluencies during transcription, so a transcript-driven filler remover has nothing to act on; a future
+*audio-based* remover would replace it. `create_transcript` (old Stage 4) was **revived** as
+`tools/create_transcript.py` and now feeds the slides side-chain (`place_slides`). Detail:
+`maybe_later/NOTES.md`.
 
 **Stage flow (current):**
 ```
@@ -29,6 +31,11 @@ OUTPUT/main_presence.json
         ↓ switch_angles.py     (hard-cut to DIV where speaker is absent; pre-roll + snap-to-pause; only MAIN video disabled)
 OUTPUT/04_angles.xml   ← final import into Premiere (review, disable bad takes)
 ```
+
+**Slides side-chain (optional, post-`04_angles`):** `slides_to_tv.py` converts the deck to 1920×1080
+PNGs; `create_transcript.py` (Whisper) produces `04_transcript.json`; `place_slides.py` reads the locked
+DIV camera and lays the slides onto a new V3 track → `OUTPUT/05_slides.xml`. See
+`workflows/slides_to_tv.md` + `workflows/place_slides.md`.
 
 ---
 
@@ -69,7 +76,7 @@ OUTPUT/04_angles.xml   ← final import into Premiere (review, disable bad takes
      ```
      Detected clean audio: DIV CAM — Channel 2 (RMS: -18dBFS, SNR: 42dB)
      MAIN CAM best channel: Channel 1 (RMS: -31dBFS, SNR: 18dB)
-     Proceed? [Y/n] or override: [camera] [channel]
+     (auto-applied; override with --force-camera main|div --force-channel N)
      ```
    - Store selected channel index for downstream stages (written to `OUTPUT/audio_config.json`)
 3. **Sync via cross-correlation:**
@@ -106,10 +113,11 @@ OUTPUT/04_angles.xml   ← final import into Premiere (review, disable bad takes
 
 ---
 
-## Parked (→ `maybe_later/`) — `create_transcript.py`  *(was Stage 4)*
+## `create_transcript.py`  *(was old Stage 4; revived 2026-06-29 for the slides side-chain)*
 
-> **Set aside 2026-06-18.** Whisper strips disfluencies during transcription, so the transcript→filler
-> path is a dead end; see `maybe_later/NOTES.md`. Original design kept below for reference.
+> **Revived 2026-06-29.** Now lives at `tools/create_transcript.py` and feeds `place_slides`
+> (slide-cutaway timing) — see `workflows/place_slides.md`. It had been parked 2026-06-18 when the
+> transcript→filler path proved a dead end; the original design is kept below for reference.
 
 **What it does:** Generates a word-level French transcript from the clean audio using local Whisper.
 
@@ -226,7 +234,7 @@ disable MAIN per window.
 tighten the wide shot); CLAHE/equalized detection frames; eye/gaze-based framing instead of any-face.
 
 **Invariant to protect:** the camera tools must only ever disable *video* tracks, never all tracks and
-never audio. As long as that holds, removal (Stage 6) and angle-switching stay separable.
+never audio. As long as that holds, a future dead-air removal pass (none currently planned) and angle-switching stay separable.
 
 ---
 

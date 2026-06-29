@@ -4,6 +4,10 @@ python-dotenv
 requests
 numpy
 scipy
+opencv-python # detect_framing (person DNN), place_slides (ORB match, frame-diff, rectify)
+pillow        # slides_to_tv: image reframing; place_slides: PNG pHYs (anamorphic PAR) tagging
+pypdfium2     # slides_to_tv: PDF rasterization (also used for PPTX after LibreOffice converts to PDF)
+# slides_to_tv PPTX input also needs LibreOffice (soffice) installed — see workflows/slides_to_tv.md
 
 # Whisper venv (Python 3.11) — used by Stage 4 only
 # faster-whisper requires Python 3.11 (no wheels for 3.14 yet)
