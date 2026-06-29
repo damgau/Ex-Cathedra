@@ -1,7 +1,53 @@
-# Plan — Stage 7: `place_slides.py` (slides onto V3, timed to the talk)
+# Plan — Stage 5: `place_slides.py` (slides onto V3, timed to the talk)
 
-**Status:** design finalized via grilling 2026-06-24 · build not started · **Scope:** the
-documented-but-unbuilt *Future stage* from `workflows/slides_to_tv.md` (`tools/place_slides.py`).
+**Status:** **BUILT + run 2026-06-29.** Design re-grilled 2026-06-29 and validated by a Phase-0 spike on
+real DIV frames; `tools/place_slides.py` + `workflows/place_slides.md` shipped. The decisions below the
+"Build outcome" section are the *original* 2026-06-24 design — read the Build outcome first; where they
+differ, the Build outcome wins.
+
+## Build outcome (2026-06-29) — supersedes the original decisions where they differ
+
+A Phase-0 spike (dump real DIV frames → rectify → score) changed three things and confirmed the rest:
+
+1. **TIMING and IDENTITY are decoupled** (was: identity-gated placement). Detecting *when* the screen
+   changes is robust; identifying *which* of 46 near-identical white-template slides is fragile. So we place
+   a cutaway at every confident screen **change** (robust) and label it with a **best-effort** identity the
+   editor can swap. Getting the timing right is the expensive-by-hand part; identity is a cheap correction.
+2. **Matcher = ORB feature inliers** (was: NCC/"template match"). The spike proved NCC, pHash and edge
+   correlation all fail on this deck — the white template dominates and different text slides score 0.7–0.9
+   similar. ORB keys on text/photo corners and separates them cleanly (correct slide as top-1 even at low
+   inlier counts; ORB_MIN≈60 flags the rest as low-confidence). Bonus: deck is presented in order, so the
+   ordinal sequence is a strong cross-check (verified: detected ids run 1,2,3,4,5,6…).
+3. **Change-detection = frame-DIFFERENCING (changed-pixel fraction ~0.01), not correlation.** White-stays-
+   white contributes 0, so only changed text registers (same-slide ≈ 0.000, different ≈ 0.03–0.06).
+   Persistence-debounced (~2 s) rejects the speaker crossing, fades, glare. ORB-inlier drop is an equivalent
+   cross-check (same ≈ 300+, different ≈ 20–50).
+4. **Fixed manual screen quad** `802,48,1602,56,1606,536,798,528` (1920×1080 space). DIV is a confirmed
+   *locked* wide shot, so one quad serves the whole talk; auto-detect grabbed only the partial bright region
+   (re-validating the manual choice). The wide shot also means **low occlusion** — the speaker stays at the
+   lectern below the elevated screen.
+5. **Transcript kept required** (editor's call) and **resurrected to `tools/create_transcript.py`** (was in
+   `maybe_later/`, where `BASE_DIR` mis-anchored every media path onto `maybe_later/INPUT`). Run on Windows
+   with `.venv_whisper\Scripts\python.exe`; ffmpeg now via `ffbin.py`. Produced 12,317 words, frames aligned
+   to `04_angles` (71–119237). Used for word-based duration + start-snap only.
+6. **Duration** = clamp(8 s, 0.3 s×words-while-projected, 25 s), **bounded to the on-screen gap** so stills
+   never overlap; slides flipped past in **<5 s are skipped**.
+7. **V3 still rendering** (revised 2026-06-29 after import tests). The square-pixel 1920×1080 + Scale-to-Frame
+   approach **stretched to 133% width**; rendering at **1440×1080-anamorphic** instead fixed that but Premiere
+   then read the PNG as **PAR 1.0 (squeezed)** — it takes a still's PAR from the file, not the XML. Final form:
+   each still is the **1440×1080 anamorphic squeeze** of a 1920×1080 display composition, with the deck's solid
+   pillarbox bars (black on photo slides, white on text) replaced by a **blurred upscaled background**, and a
+   **pHYs chunk written so the PNG itself declares PAR 1.333**. Displays at correct 16:9 / 100% with no
+   Scale-to-Frame (manual Interpret-Footage fallback if a Premiere build ignores pHYs). Blur strength tuned
+   (downscale 10). Derived stills → `OUTPUT/05_slides_assets/`; deck PNGs stay the ORB references.
+   (`render_v3_still`/`_strip_bars`/`_cover_blur` in `place_slides.py`.)
+
+Pipeline is two-pass: Pass 1 streams DIV once (frame-diff → segments), Pass 2 grabs one mid-segment full-res
+frame per segment for ORB identity, then merges same-id neighbours (collapses animation builds).
+
+---
+
+## Original design (2026-06-24 grilling) — historical; see Build outcome above for what shipped
 
 ## Context
 
